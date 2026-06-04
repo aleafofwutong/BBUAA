@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BBUAA · 课程搜索</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>BBUAA 课程浏览器</h1>
+      <p class="subtitle">Break-Boundary Ur Academic Archive! · the Bedroom-BUAA! </p>
+    </div>
+    <div style="display:flex;align-items:center;gap:0.6rem;">
+      <button id="logoutBtn" class="ghost" style="display:none;font-size:0.8rem;padding:0.35rem 0.7rem;">登出</button>
+      <div id="status" class="status">未登录</div>
+    </div>
+  </header>
+
+  <main class="layout auth-only" id="authView">
+    <section class="panel auth-panel">
+      <h2>SSO 登录</h2>
+      <p class="auth-tip">你是否曾经有过一门梦寐以求的课程，但苦于与置课的冲突和时间的安排而未能选上？</p>
+      <p class="auth-tip">你是否觉得，在随机抽签的选课系统中难以找到适合自己风格的老师？</p>
+      <p class="auth-tip">你是否觉得，大学四年，你应该有自己的课外学习机会，而不是被迫在课表上“打工”？ </p>
+      <p class="auth-tip">你是否觉得，在大学的学习生活中，应该有更多的时间和空间去探索和尝试？</p>
+      <p class="auth-tip"> Bedroom-BUAA项目,为你而诞生！ </p>
+      <p class="auth-tip"> BBUAA为您提供一个在bedroom就能找到你想要的课程的平台！ </p>
+      <p class="auth-tip"> 本项目旨在为BBUAA的同学提供一个便捷的课程搜索和回放平台，为同学们提供一个更加自由、开放、多元的学习环境。</p>
+      
+      <p class="auth-tip"> 注：本项目目前仅支持所有可回放课程的观看及PPT下载</p>
+       <form id="loginForm" class="auth-form">
+        <label>
+          学号
+          <input type="text" name="username" placeholder="学号 / 工号" autocomplete="username" />
+        </label>
+        <label>
+          密码
+          <input type="password" name="password" placeholder="密码" autocomplete="current-password" />
+        </label>
+        <div class="actions">
+          <button type="submit" class="primary">登录并进入</button>
+          <button type="button" id="reuseCookieBtn" class="ghost">使用上次 cookie</button>
+        </div>
+        <div id="authError" class="error hidden"></div>
+      </form>
+      <p class="auth-tip">请先登录或复用上次 cookie，再进入课程搜索界面。</p>
+      <p class="auth-tip"> 本网站使用了部分逆向和爬虫技术，网络不是法外之地，请勿滥用！</p>
+      <p class="auth-tip"> 有疑问请在github提交<a href="https://github.com/aleafofwutong" style="color: #ffffff;">https://github.com/aleafofwutong</a>。</p>
+      <p class="auth-tip"> 目前仅在chrome浏览器中测试，其他浏览器可能存在兼容性问题。</p>
+      <p class="auth-tip"> 本网站不会收集您的任何信息，但也请注意您自己的隐私和数据安全，保管好您的cookie和学号密码！ </p>
+      <p class="auth-tip"> 该项目仅供学习交流使用，严禁用于商业和非法用途！</p>
+
+      <p class="auth-tip">后期将支持课程实时直播？</p>
+      <p class="auth-congratulations "> 祝学业进步！</p>
+      <div id="authLoading" class="loading hidden">登录中…</div>
+    </section>
+  </main>
+
+  <main class="layout hidden" id="appView">
+    <section class="panel filters">
+      <h2>搜索条件</h2>
+      <form id="searchForm">
+        <label>
+          课程名称
+          <input type="text" name="title" placeholder="如：基础物理学" />
+        </label>
+        <label>
+          教师名称
+          <input type="text" name="realname" placeholder="如：乐小云" />
+        </label>
+        <label>
+          课程编号
+          <input type="text" name="course_code" placeholder="如：202520262B" />
+        </label>
+        <label>
+          开课学院
+          <select name="kkxycode" id="collegeSelect">
+            <option value="">全部学院</option>
+          </select>
+        </label>
+        <label>
+          学期
+          <select name="term" id="termSelect">
+            <option value="">全部学期</option>
+          </select>
+        </label>
+        <label>
+          上课日期
+          <input type="date" name="create_at" title="按课程开始日期筛选，与官网全局搜索一致" />
+        </label>
+        <label>
+          校区
+          <select name="campus_id" id="campusSelect">
+            <option value="">全部校区</option>
+          </select>
+        </label>
+        <label>
+          教学楼
+          <select name="building_id" id="buildingSelect" disabled>
+            <option value="">先选择校区</option>
+          </select>
+        </label>
+        <label>
+          教室
+          <select name="room_id" id="roomSelect" disabled>
+            <option value="">先选择教学楼</option>
+          </select>
+        </label>
+        <div class="actions">
+          <button type="submit" class="primary">搜索</button>
+          <button type="button" id="resetBtn" class="ghost">重置</button>
+          <button type="button" id="loadAllBtn" class="ghost">今日直播课</button>
+            <button type="button" id="shutdownBtn" class="danger">退出并释放端口</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="panel results">
+      <div class="results-head">
+        <h2>课程列表</h2>
+        <span id="resultMeta" class="meta"></span>
+      </div>
+      <div id="loading" class="loading hidden">加载中…</div>
+      <div id="errorBox" class="error hidden"></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>课程名称</th>
+              <th>课程编号</th>
+              <th>教师</th>
+              <th>学院</th>
+              <th>时间</th>
+              <th>教室</th>
+              <th>状态</th>
+              <th>播放</th>
+            </tr>
+          </thead>
+          <tbody id="courseBody">
+            <tr><td colspan="8" class="empty">请输入条件后搜索，或点击「今日直播课」</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <button type="button" id="prevPage" class="ghost" disabled>上一页</button>
+        <span id="pageInfo">第 1 页</span>
+        <button type="button" id="nextPage" class="ghost" disabled>下一页</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

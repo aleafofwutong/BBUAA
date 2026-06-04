@@ -1,0 +1,1021 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BBUAA · 课程播放器</title>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.7/dist/hls.min.js"></script>
+  <style>
+    :root {
+      --bg: #0a0f14;
+      --surface: #141b23;
+      --border: #253040;
+      --text: #dde4f0;
+      --muted: #7d8fa8;
+      --accent: #4a9eff;
+      --accent-dim: #2a6099;
+      --danger: #ff5c5c;
+      --ppt-bg: #1a1e24;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ---- top bar ---- */
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: 0.6rem 1.2rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .topbar .back {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 0.85rem;
+      white-space: nowrap;
+    }
+    .topbar .back:hover { text-decoration: underline; }
+    .topbar .info { flex: 1; min-width: 0; }
+    .topbar .info h1 {
+      font-size: 1.05rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      line-height: 1.3;
+    }
+    .topbar .info .meta {
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+    .topbar .status-badge {
+      font-size: 0.78rem;
+      padding: 0.25rem 0.6rem;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .status-badge.live {
+      border-color: #d32f2f;
+      color: #ff8a80;
+    }
+    .status-badge.playback {
+      border-color: #2e7d32;
+      color: #81c784;
+    }
+
+    /* ---- main layout ---- */
+    .main {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+      gap: 2px;
+      background: var(--border);
+    }
+
+    /* ---- video panel ---- */
+    .video-panel {
+      flex: 1 1 60%;
+      display: flex;
+      flex-direction: column;
+      background: #000;
+      min-width: 0;
+      position: relative;
+    }
+    .video-container {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      min-height: 0;
+    }
+    .video-container:fullscreen,
+    .video-container:-webkit-full-screen {
+      width: 100vw; height: 100vh;
+    }
+    .video-container:fullscreen video,
+    .video-container:-webkit-full-screen video {
+      width: 100%; height: 100%; object-fit: contain;
+    }
+    video {
+      width: 100%; height: 100%;
+      display: block;
+      background: #000;
+      cursor: pointer;
+      object-fit: contain;
+    }
+    .video-loading {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 0.6rem;
+      background: rgba(0,0,0,0.6);
+      color: var(--muted);
+      font-size: 0.9rem;
+      z-index: 5;
+    }
+    .video-loading.hidden { display: none; }
+    .spinner {
+      width: 32px; height: 32px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* video controls overlay */
+    .vid-controls {
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      padding: 10px 14px;
+      background: linear-gradient(transparent, rgba(0,0,0,0.8));
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      opacity: 0;
+      transition: opacity 0.3s;
+      z-index: 10;
+    }
+    .video-container:hover .vid-controls,
+    .video-container.ctrl-visible .vid-controls { opacity: 1; }
+    .vid-btn {
+      background: none; border: none; color: #fff;
+      width: 36px; height: 36px; border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; flex-shrink: 0; transition: background 0.15s;
+    }
+    .vid-btn:hover { background: rgba(255,255,255,0.12); }
+    .vid-btn svg { width: 20px; height: 20px; fill: currentColor; }
+    .vid-time {
+      font-size: 0.8rem;
+      color: rgba(255,255,255,0.75);
+      flex-shrink: 0;
+      font-variant-numeric: tabular-nums;
+    }
+    .vid-spacer { flex: 1; }
+
+    /* 进度条 */
+    .seek-bar-wrap {
+      position: absolute;
+      bottom: 48px; left: 0; right: 0;
+      padding: 0 8px;
+      z-index: 10;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    .video-container:hover .seek-bar-wrap,
+    .video-container.ctrl-visible .seek-bar-wrap { opacity: 1; }
+    .seek-bar {
+      -webkit-appearance: none;
+      width: 100%; height: 5px;
+      background: rgba(255,255,255,0.25);
+      border-radius: 3px;
+      outline: none;
+      cursor: pointer;
+      transition: height 0.15s;
+    }
+    .seek-bar:hover { height: 8px; }
+    .seek-bar::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      background: #fff;
+      cursor: pointer;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+    }
+    .seek-bar::-moz-range-thumb {
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      background: #fff;
+      border: none;
+      cursor: pointer;
+    }
+
+    /* 倍速 */
+    .speed-wrap {
+      position: relative;
+    }
+    .speed-btn {
+      background: none; border: none;
+      color: #fff; cursor: pointer;
+      width: 40px; height: 32px;
+      border-radius: 6px;
+      font-size: 0.8rem; font-weight: 600;
+      display: flex; align-items: center; justify-content: center;
+      transition: background 0.15s;
+    }
+    .speed-btn:hover { background: rgba(255,255,255,0.12); }
+    .speed-menu {
+      display: none;
+      position: absolute;
+      bottom: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #1e2734;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 4px 0;
+      margin-bottom: 4px;
+      z-index: 20;
+      min-width: 70px;
+    }
+    .speed-menu.show { display: block; }
+    .speed-menu button {
+      display: block; width: 100%;
+      background: none; border: none;
+      color: #ccc; cursor: pointer;
+      padding: 5px 14px;
+      font-size: 0.78rem;
+      text-align: center;
+      white-space: nowrap;
+    }
+    .speed-menu button:hover { background: rgba(255,255,255,0.08); color: #fff; }
+    .speed-menu button.active { color: var(--accent); font-weight: 600; }
+
+    /* ---- PPT panel ---- */
+    .ppt-panel {
+      flex: 0 1 40%;
+      background: var(--ppt-bg);
+      display: flex;
+      flex-direction: column;
+      min-width: 320px;
+    }
+    .ppt-display {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+      min-height: 0;
+      position: relative;
+    }
+    .ppt-display img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      border-radius: 4px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+      transition: opacity 0.2s;
+    }
+    .ppt-placeholder {
+      color: var(--muted);
+      font-size: 0.9rem;
+      text-align: center;
+      line-height: 1.6;
+    }
+    .ppt-nav {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 0.8rem;
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .ppt-nav-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.35rem 0.7rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.8rem;
+      transition: background 0.15s;
+    }
+    .ppt-nav-btn:hover:not(:disabled) { background: #1f2a3a; }
+    .ppt-nav-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .ppt-nav-info {
+      flex: 1;
+      text-align: center;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    .ppt-auto-btn {
+      background: var(--accent-dim);
+      border: 1px solid var(--accent);
+      color: #fff;
+      padding: 0.35rem 0.7rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.75rem;
+      white-space: nowrap;
+      transition: background 0.15s;
+    }
+    .ppt-auto-btn.off {
+      background: var(--surface);
+      border-color: var(--border);
+      color: var(--muted);
+    }
+
+    /* ---- PPT timeline strip ---- */
+    .ppt-strip {
+      height: 64px;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      padding: 0 6px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      flex-shrink: 0;
+    }
+    .ppt-strip::-webkit-scrollbar { height: 4px; }
+    .ppt-strip::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+    .ppt-thumb {
+      height: 48px;
+      min-width: 64px;
+      border-radius: 4px;
+      overflow: hidden;
+      cursor: pointer;
+      border: 2px solid transparent;
+      flex-shrink: 0;
+      transition: border-color 0.15s;
+      position: relative;
+    }
+    .ppt-thumb.active { border-color: var(--accent); }
+    .ppt-thumb img {
+      width: 100%; height: 100%;
+      object-fit: cover;
+    }
+    .ppt-thumb .label {
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      background: rgba(0,0,0,0.7);
+      color: #ccc;
+      font-size: 0.6rem;
+      text-align: center;
+      padding: 1px 2px;
+    }
+
+    /* ---- error ---- */
+    .toast {
+      position: fixed;
+      top: 1rem;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--danger);
+      color: #fff;
+      padding: 0.6rem 1.2rem;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      z-index: 999;
+      animation: fadeIn 0.3s;
+    }
+    @keyframes fadeIn { from { opacity: 0; transform: translateX(-50%) translateY(-8px); } }
+  </style>
+</head>
+<body>
+  <!-- top bar -->
+  <div class="topbar">
+    <a href="/" class="back">← 返回搜索</a>
+    <div class="info">
+      <h1 id="courseTitle">加载中…</h1>
+      <div class="meta" id="courseMeta"></div>
+    </div>
+    <span class="status-badge playback" id="statusBadge">回放</span>
+  </div>
+
+  <!-- main -->
+  <div class="main">
+    <!-- video -->
+    <div class="video-panel" id="videoPanel">
+      <div class="video-container" id="videoContainer">
+        <video id="video" playsinline></video>
+        <div class="video-loading" id="videoLoading">
+          <div class="spinner"></div>
+          <span>正在加载视频…</span>
+        </div>
+        <!-- 进度条 -->
+        <div class="seek-bar-wrap" id="seekBarWrap">
+          <input type="range" class="seek-bar" id="seekBar" min="0" max="100" step="0.1" value="0" />
+        </div>
+        <div class="vid-controls" id="vidControls">
+          <button class="vid-btn" id="btnPlay" title="播放/暂停 (空格)">
+            <svg id="svgPlay" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+            <svg id="svgPause" viewBox="0 0 24 24" style="display:none"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+          </button>
+          <span class="vid-time" id="vidTime">00:00 / 00:00</span>
+          <span class="vid-spacer"></span>
+          <!-- 倍速 -->
+          <div class="speed-wrap" id="speedWrap">
+            <button class="speed-btn" id="speedBtn" title="倍速">1×</button>
+            <div class="speed-menu" id="speedMenu">
+              <button data-speed="0.5">0.5×</button>
+              <button data-speed="0.75">0.75×</button>
+              <button data-speed="1" class="active">1×</button>
+              <button data-speed="1.25">1.25×</button>
+              <button data-speed="1.5">1.5×</button>
+              <button data-speed="2">2×</button>
+            </div>
+          </div>
+          <button class="vid-btn" id="btnFullscreen" title="全屏 (F)">
+            <svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- PPT -->
+    <div class="ppt-panel" id="pptPanel">
+      <div class="ppt-display" id="pptDisplay">
+        <div class="ppt-placeholder">等待加载 PPT 数据…</div>
+      </div>
+      <div class="ppt-nav">
+        <button class="ppt-nav-btn" id="pptPrev" disabled title="上一页 (←)">◀</button>
+        <span class="ppt-nav-info" id="pptInfo">- / -</span>
+        <button class="ppt-nav-btn" id="pptNext" disabled title="下一页 (→)">▶</button>
+        <button class="ppt-auto-btn" id="pptAuto" title="自动跟随视频">自动</button>
+        <button class="ppt-nav-btn" id="pptDownload" title="下载全部 PPT (ZIP)" style="margin-left:auto;">⬇ 下载PPT</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- PPT timeline strip -->
+  <div class="ppt-strip" id="pptStrip"></div>
+
+  <script>
+    // ========== URL params ==========
+    const params = new URLSearchParams(location.search);
+    const COURSE_ID = params.get('course_id') || '';
+    const SUB_ID = params.get('sub_id') || '';
+    const RESOURCE_GUID = params.get('resource_guid') || '';
+    const SEARCH_TIME = params.get('search_time') || '';
+
+    // ========== DOM ==========
+    const $ = (s) => document.querySelector(s);
+    const video = $('#video');
+    const videoContainer = $('#videoContainer');
+    const videoLoading = $('#videoLoading');
+    const vidControls = $('#vidControls');
+    const vidTime = $('#vidTime');
+    const pptDisplay = $('#pptDisplay');
+    const pptStrip = $('#pptStrip');
+    const pptInfo = $('#pptInfo');
+    const pptAutoBtn = $('#pptAuto');
+    const statusBadge = $('#statusBadge');
+
+    // ========== state ==========
+    let hls = null;
+    let pptSlides = [];          // [{ time_sec, img_url }]
+    let currentPptIdx = -1;
+    let autoFollow = true;
+    let manualFollowTimer = null;
+    let videoDuration = 0;
+    let controlsTimer = null;
+    let savedPptGuids = [];      // 缓存 PPT guid 列表，供下载使用
+
+    // ========== helpers ==========
+    function fmtTime(sec) {
+      if (!isFinite(sec) || sec < 0) return '00:00';
+      const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+      return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+    }
+
+    // 持久 clientUUID（模拟浏览器端生成的会话标识）
+    const CLIENT_UUID = (() => {
+      let id = sessionStorage.getItem('bbuaa_client_uuid');
+      if (!id) {
+        id = crypto.randomUUID?.() ||
+          'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+            const r = Math.random() * 16 | 0;
+            return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+          });
+        sessionStorage.setItem('bbuaa_client_uuid', id);
+      }
+      return id;
+    })();
+
+    function appendClientUUID(url) {
+      // resource.msa.buaa.edu.cn 的视频需要 clientUUID 参数才能访问
+      if (!url || !url.includes('resource.msa.buaa.edu.cn')) return url;
+      if (url.includes('clientUUID=')) return url;
+      const sep = url.includes('?') ? '&' : '?';
+      return url + sep + 'clientUUID=' + CLIENT_UUID;
+    }
+
+    function proxyImg(url) {
+      return '/api/proxy/image?url=' + encodeURIComponent(url);
+    }
+
+    function proxyVideo(url) {
+      // 将视频地址路由通过 Flask 代理，解决跨域 cookie 问题
+      if (!url || url.startsWith('/api/')) return url;
+      return '/api/proxy/video?url=' + encodeURIComponent(url);
+    }
+
+    function needsProxy(url) {
+      return url && (
+        url.includes('resource.msa.buaa.edu.cn') ||
+        url.includes('lmt') && url.includes('buaa.edu.cn')
+      );
+    }
+
+    async function apiJson(path) {
+      const resp = await fetch(path);
+      const data = await resp.json();
+      if (!resp.ok || !data.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+      return data;
+    }
+
+    function toast(msg) {
+      const el = document.createElement('div');
+      el.className = 'toast';
+      el.textContent = msg;
+      document.body.appendChild(el);
+      setTimeout(() => el.remove(), 4000);
+    }
+
+    // ========== load data ==========
+    async function loadCourse() {
+      if (!COURSE_ID || !SUB_ID) {
+        toast('缺少 course_id 或 sub_id 参数，请从课程列表进入');
+        return;
+      }
+      try {
+        // 1. 加载课程详情
+        let detailUrl = `/api/courses/detail?course_id=${COURSE_ID}&sub_id=${SUB_ID}`;
+        if (SEARCH_TIME) detailUrl += `&search_time=${SEARCH_TIME}`;
+        const detailData = await apiJson(detailUrl);
+        const d = detailData.detail;
+
+        // 更新标题
+        $('#courseTitle').textContent = d.title || '未知课程';
+        $('#courseMeta').textContent = [
+          d.lecturer_name, d.room_name, d.sub_title, '状态: ' + (d.status_label || '未知')
+        ].filter(Boolean).join(' · ');
+
+        // 状态徽章（用后端修正后的 status_label）
+        const rawStatus = d.status_label || '';
+        const isLive = rawStatus.includes('直播');
+        const isPreview = rawStatus.includes('预告') || rawStatus.includes('未开始');
+        const isPlayback = rawStatus.includes('回放') || rawStatus.includes('已结束');
+        if (isLive) {
+          statusBadge.textContent = '直播中';
+          statusBadge.className = 'status-badge live';
+        } else if (isPreview) {
+          statusBadge.textContent = rawStatus;
+          statusBadge.className = 'status-badge';
+        } else {
+          statusBadge.textContent = isPlayback ? '回放' : rawStatus || '未知';
+          statusBadge.className = 'status-badge playback';
+        }
+
+        // 2. PPT resource_guid：收集所有候选 GUID（URL 参数 + 后端解析的 ppt_guids 列表）
+        const allPptGuids = [RESOURCE_GUID]
+          .concat(d.ppt_guids || [])
+          .concat(d.ppt_resource_guid ? [d.ppt_resource_guid] : [])
+          .filter(Boolean)
+          .filter((v, i, a) => a.indexOf(v) === i);  // 去重
+        savedPptGuids = allPptGuids;  // 缓存供下载使用
+
+        // 3. 并行加载 PPT 时间轴（将候选 GUID 列表传给后端逐个尝试）
+        let pptPromise = Promise.resolve({ list: [], used_guid: '' });
+        if (allPptGuids.length > 0) {
+          const primaryGuid = allPptGuids[0];
+          const altGuids = allPptGuids.slice(1).join(',');
+          let pptUrl = `/api/courses/ppt?course_id=${COURSE_ID}&sub_id=${SUB_ID}&resource_guid=${encodeURIComponent(primaryGuid)}`;
+          if (altGuids) pptUrl += `&alt_guids=${encodeURIComponent(altGuids)}`;
+          pptPromise = apiJson(pptUrl).catch(() => ({ list: [], used_guid: '' }));
+        }
+
+        // 4. 视频地址：后端已经解析好 primary_video_url 和 is_m3u8
+        //    如果 URL 需要 cookie 认证，走 Flask 代理
+        let videoUrl = d.primary_video_url || d.playback_url || '';
+        let isM3u8 = d.is_m3u8 || false;
+
+        // 如果仍然没有视频，尝试 teacher_video / ppt_video / trans_socket_url
+        if (!videoUrl && d.teacher_video && d.teacher_video.preview_url) {
+          videoUrl = d.teacher_video.preview_url;
+          isM3u8 = d.teacher_video.is_m3u8 || false;
+        }
+        if (!videoUrl && d.ppt_video && d.ppt_video.preview_url) {
+          videoUrl = d.ppt_video.preview_url;
+          isM3u8 = d.ppt_video.is_m3u8 || false;
+        }
+        if (!videoUrl && d.trans_socket_url) {
+          videoUrl = d.trans_socket_url;
+          isM3u8 = true;
+        }
+
+        // 给 resource.msa.buaa.edu.cn 的视频追加 clientUUID（必须！否则 403）
+        videoUrl = appendClientUUID(videoUrl);
+        // 路由视频通过代理（解决跨域 cookie 问题）
+        const rawVideoUrl = videoUrl;
+        if (needsProxy(videoUrl)) {
+          videoUrl = proxyVideo(videoUrl);
+        }
+
+        pptSlides = (await pptPromise).list || [];
+
+        // 无视频也无 PPT
+        if (!videoUrl && pptSlides.length === 0) {
+          if (isPreview) {
+            videoLoading.innerHTML = '<span>📅 该课程尚未开始，暂无视频和 PPT</span>';
+          } else {
+            videoLoading.innerHTML = '<span>⚠ 没有可用的视频或 PPT 数据<br><small>请确认 Cookie 未过期，或尝试在原网页悬停视频区域后再刷新</small></span>';
+          }
+          return;
+        }
+
+        // 初始化视频
+        if (videoUrl) {
+          // 对于没有 auth_key 的 HLS 流，也走代理
+          if (isM3u8 && !videoUrl.includes('auth_key') && needsProxy(rawVideoUrl)) {
+            videoUrl = proxyVideo(rawVideoUrl);
+          }
+          initVideo(videoUrl, isM3u8);
+        } else {
+          videoLoading.innerHTML = '<span>📹 未找到视频地址<br><small>该课程可能尚未生成回放，或需要在原网页悬停触发</small></span>';
+        }
+
+        // 渲染 PPT
+        if (pptSlides.length > 0) {
+          renderPptStrip();
+          updatePptDisplay(0);
+          if (!videoUrl) videoLoading.classList.add('hidden');
+          pptInfo.textContent = `共 ${pptSlides.length} 页`;
+        } else {
+          pptDisplay.innerHTML = '<div class="ppt-placeholder">该课程没有 PPT 数据<br><small>（可能是纯板书课程，或PPT尚未上传）</small></div>';
+        }
+
+        // 如果是从 livingroom 抓取的视频，提示用户
+        if (d._livingroom_scraped) {
+          console.log('ℹ 视频地址来自 livingroom 页面抓取');
+        }
+
+      } catch (err) {
+        console.error(err);
+        toast('加载失败: ' + err.message);
+        videoLoading.innerHTML = `<span>⚠ 加载失败: ${err.message}<br><small>请检查 Cookie 是否过期</small></span>`;
+      }
+    }
+
+    // ========== video ==========
+    function initVideo(url, isM3u8) {
+      if (isM3u8 && Hls.isSupported()) {
+        // HLS 流通常自带 auth_key 鉴权参数，无需代理
+        hls = new Hls({ enableWorker: true, lowLatencyMode: true });
+        hls.loadSource(url);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          videoLoading.classList.add('hidden');
+          videoDuration = hls.media?.duration || 0;
+          video.play().catch(() => {});
+          updateTimeDisplay();
+        });
+        hls.on(Hls.Events.ERROR, (_, data) => {
+          if (data.fatal) {
+            console.error('HLS fatal error', data);
+            toast('视频流断开，尝试重连…');
+            hls.destroy();
+            setTimeout(() => initVideo(url, true), 2000);
+          }
+        });
+      } else if (isM3u8 && video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = url;
+        video.addEventListener('loadedmetadata', () => {
+          videoLoading.classList.add('hidden');
+          videoDuration = video.duration;
+          video.play().catch(() => {});
+          updateTimeDisplay();
+        });
+      } else {
+        // MP4 或直接 URL（通过代理解决跨域 cookie）
+        video.src = url;
+        video.addEventListener('loadedmetadata', () => {
+          videoLoading.classList.add('hidden');
+          videoDuration = video.duration;
+          updateTimeDisplay();
+        });
+        video.addEventListener('error', (e) => {
+          console.error('Video error', e);
+          // 如果代理加载失败，尝试直接加载原 URL
+          if (url.startsWith('/api/proxy/video')) {
+            const directUrl = new URLSearchParams(url.split('?')[1]).get('url');
+            if (directUrl) {
+              console.log('代理失败，尝试直连:', directUrl);
+              video.src = directUrl;
+            }
+          } else {
+            toast('视频加载失败，Cookie 可能已过期');
+          }
+        });
+        video.addEventListener('waiting', () => {
+          console.log('Video buffering...');
+        });
+      }
+    }
+
+    // ========== PPT sync ==========
+    function findPptIndex(timeSec) {
+      // 返回 time_sec <= timeSec 的最大 index
+      let idx = -1;
+      for (let i = 0; i < pptSlides.length; i++) {
+        if (pptSlides[i].time_sec <= timeSec) idx = i;
+        else break;
+      }
+      return idx;
+    }
+
+    function updatePptDisplay(idx) {
+      if (idx < 0 || idx >= pptSlides.length) return;
+      if (idx === currentPptIdx) return;
+      currentPptIdx = idx;
+      const slide = pptSlides[idx];
+
+      // 主显示区
+      pptDisplay.innerHTML = `<img src="${proxyImg(slide.img_url)}" alt="PPT 第${idx+1}页" />`;
+
+      // 底部信息
+      pptInfo.textContent = `${idx + 1} / ${pptSlides.length}  (${fmtTime(slide.time_sec)})`;
+
+      // 按钮状态
+      $('#pptPrev').disabled = idx <= 0;
+      $('#pptNext').disabled = idx >= pptSlides.length - 1;
+
+      // 缩略图高亮
+      updateThumbHighlight();
+      // 滚动缩略图到可见
+      const thumb = pptStrip.children[idx];
+      if (thumb) thumb.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+    }
+
+    function updateThumbHighlight() {
+      for (let i = 0; i < pptStrip.children.length; i++) {
+        pptStrip.children[i].classList.toggle('active', i === currentPptIdx);
+      }
+    }
+
+    function renderPptStrip() {
+      pptStrip.innerHTML = pptSlides.map((s, i) => `
+        <div class="ppt-thumb" data-idx="${i}" title="第${i+1}页 · ${fmtTime(s.time_sec)}">
+          <img src="${proxyImg(s.img_url)}" alt="" loading="lazy" />
+          <span class="label">${fmtTime(s.time_sec)}</span>
+        </div>
+      `).join('');
+
+      // 点击缩略图
+      pptStrip.querySelectorAll('.ppt-thumb').forEach(el => {
+        el.addEventListener('click', () => {
+          const idx = parseInt(el.dataset.idx);
+          seekToPpt(idx);
+        });
+      });
+    }
+
+    function seekToPpt(idx) {
+      if (idx < 0 || idx >= pptSlides.length) return;
+      updatePptDisplay(idx);
+      // 跳转视频到该 PPT 的时间点
+      const targetTime = pptSlides[idx].time_sec;
+      if (video.src || hls) {
+        video.currentTime = targetTime;
+      }
+      // 暂时关闭自动跟随
+      pauseAutoFollow();
+    }
+
+    function pauseAutoFollow() {
+      autoFollow = false;
+      pptAutoBtn.textContent = '手动';
+      pptAutoBtn.classList.add('off');
+      clearTimeout(manualFollowTimer);
+      manualFollowTimer = setTimeout(() => {
+        autoFollow = true;
+        pptAutoBtn.textContent = '自动';
+        pptAutoBtn.classList.remove('off');
+      }, 8000);
+    }
+
+    // ========== video events ==========
+    video.addEventListener('timeupdate', () => {
+      updateTimeDisplay();
+      if (!autoFollow || pptSlides.length === 0) return;
+      const idx = findPptIndex(video.currentTime);
+      if (idx >= 0 && idx !== currentPptIdx) {
+        updatePptDisplay(idx);
+      }
+    });
+
+    video.addEventListener('loadedmetadata', () => {
+      videoDuration = video.duration;
+      updateTimeDisplay();
+    });
+
+    video.addEventListener('durationchange', () => {
+      videoDuration = video.duration;
+      updateTimeDisplay();
+    });
+
+    video.addEventListener('play', () => {
+      document.getElementById('svgPlay').style.display = 'none';
+      document.getElementById('svgPause').style.display = 'block';
+    });
+    video.addEventListener('pause', () => {
+      document.getElementById('svgPlay').style.display = 'block';
+      document.getElementById('svgPause').style.display = 'none';
+    });
+
+    function updateTimeDisplay() {
+      vidTime.textContent = fmtTime(video.currentTime) + ' / ' + fmtTime(videoDuration || 0);
+    }
+
+    // ========== controls ==========
+    $('#btnPlay').addEventListener('click', () => {
+      if (video.paused) video.play().catch(() => {});
+      else video.pause();
+    });
+    video.addEventListener('click', () => {
+      if (video.paused) video.play().catch(() => {});
+      else video.pause();
+    });
+
+    $('#btnFullscreen').addEventListener('click', () => {
+      if (document.fullscreenElement) {
+        document.exitFullscreen();
+      } else {
+        videoContainer.requestFullscreen?.() || videoContainer.webkitRequestFullscreen?.();
+      }
+    });
+
+    // control bar auto-hide
+    videoContainer.addEventListener('mousemove', () => {
+      videoContainer.classList.add('ctrl-visible');
+      clearTimeout(controlsTimer);
+      controlsTimer = setTimeout(() => {
+        if (!video.paused) videoContainer.classList.remove('ctrl-visible');
+      }, 2500);
+    });
+
+    // ---- Progress / seek bar ----
+    const seekBar = $('#seekBar');
+    let seekDragging = false;
+
+    seekBar.addEventListener('input', () => {
+      seekDragging = true;
+      const t = (parseFloat(seekBar.value) / 100) * (videoDuration || 0);
+      vidTime.textContent = fmtTime(t) + ' / ' + fmtTime(videoDuration || 0);
+    });
+    seekBar.addEventListener('change', () => {
+      const t = (parseFloat(seekBar.value) / 100) * (videoDuration || 0);
+      video.currentTime = t;
+      seekDragging = false;
+    });
+    video.addEventListener('timeupdate', () => {
+      if (!seekDragging && videoDuration > 0) {
+        seekBar.value = (video.currentTime / videoDuration) * 100;
+      }
+    });
+    video.addEventListener('durationchange', () => {
+      videoDuration = video.duration;
+      seekBar.max = 100;
+    });
+
+    // ---- Speed control ----
+    const speedBtn = $('#speedBtn');
+    const speedMenu = $('#speedMenu');
+    let currentSpeed = 1;
+
+    speedBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      speedMenu.classList.toggle('show');
+    });
+    document.addEventListener('click', () => speedMenu.classList.remove('show'));
+
+    speedMenu.querySelectorAll('button').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const spd = parseFloat(btn.dataset.speed);
+        video.playbackRate = spd;
+        currentSpeed = spd;
+        speedBtn.textContent = spd + '×';
+        speedMenu.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        speedMenu.classList.remove('show');
+      });
+    });
+
+    // ---- PPT download ----
+    $('#pptDownload').addEventListener('click', async () => {
+      if (pptSlides.length === 0) {
+        toast('没有 PPT 数据可下载');
+        return;
+      }
+      const btn = $('#pptDownload');
+      btn.disabled = true;
+      btn.textContent = '打包中…';
+      try {
+        const pGuid = savedPptGuids[0] || '';
+        const aGuids = savedPptGuids.slice(1).join(',');
+        let dl = `/api/courses/ppt/download?course_id=${COURSE_ID}&sub_id=${SUB_ID}&resource_guid=${encodeURIComponent(pGuid)}`;
+        if (aGuids) dl += `&alt_guids=${encodeURIComponent(aGuids)}`;
+
+        const resp = await fetch(dl);
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          throw new Error(err.error || `HTTP ${resp.status}`);
+        }
+        const blob = await resp.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `ppt_${COURSE_ID}_${SUB_ID}.pptx`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(a.href);
+        toast(`已下载 ${pptSlides.length} 页 PPT`);
+      } catch (err) {
+        toast('下载失败: ' + err.message);
+      }
+      btn.disabled = false;
+      btn.textContent = '⬇ 下载PPT';
+    });
+
+    // PPT nav buttons
+    $('#pptPrev').addEventListener('click', () => {
+      if (currentPptIdx > 0) seekToPpt(currentPptIdx - 1);
+    });
+    $('#pptNext').addEventListener('click', () => {
+      if (currentPptIdx < pptSlides.length - 1) seekToPpt(currentPptIdx + 1);
+    });
+
+    // auto-follow toggle
+    pptAutoBtn.addEventListener('click', () => {
+      if (autoFollow) {
+        pauseAutoFollow();
+      } else {
+        autoFollow = true;
+        pptAutoBtn.textContent = '自动';
+        pptAutoBtn.classList.remove('off');
+        // 立即同步
+        const idx = findPptIndex(video.currentTime);
+        if (idx >= 0) updatePptDisplay(idx);
+      }
+    });
+
+    // ========== keyboard ==========
+    document.addEventListener('keydown', (e) => {
+      if (e.target.tagName === 'INPUT') return;
+      switch (e.code) {
+        case 'Space':
+          e.preventDefault();
+          if (video.paused) video.play().catch(() => {});
+          else video.pause();
+          break;
+        case 'KeyF':
+          if (document.fullscreenElement) document.exitFullscreen();
+          else videoContainer.requestFullscreen?.();
+          break;
+        case 'ArrowLeft':
+          e.preventDefault();
+          if (e.ctrlKey || e.metaKey) {
+            video.currentTime = Math.max(0, video.currentTime - 10);
+          } else if (currentPptIdx > 0) {
+            seekToPpt(currentPptIdx - 1);
+          }
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          if (e.ctrlKey || e.metaKey) {
+            video.currentTime = Math.min(videoDuration || Infinity, video.currentTime + 10);
+          } else if (currentPptIdx < pptSlides.length - 1) {
+            seekToPpt(currentPptIdx + 1);
+          }
+          break;
+        case 'ArrowUp':
+          e.preventDefault();
+          video.volume = Math.min(1, video.volume + 0.1);
+          break;
+        case 'ArrowDown':
+          e.preventDefault();
+          video.volume = Math.max(0, video.volume - 0.1);
+          break;
+        case 'KeyM':
+          video.muted = !video.muted;
+          break;
+      }
+    });
+
+    // ========== start ==========
+    loadCourse();
+  </script>
+</body>
+</html>

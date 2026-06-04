@@ -56,7 +56,7 @@ bash start_bbuaa.sh     # 启动服务
 
 ### 代理配置
 
-如果校园网无法直接访问 BUA 服务器，需配置代理：
+如果网络环境无法直接访问 BUAA 服务器，需自行配置代理：
 
 ```bash
 export BBUAA_PROXY=http://127.0.0.1:7897

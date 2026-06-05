@@ -144,10 +144,6 @@ BBUAA/
                                 └── m3u8 分片 URL 自动改写为代理 URL
 ```
 
-### 直播流获取
-
-鼠标悬停触发 `yjapi.msa.buaa.edu.cn` API（`all=1&show_all=1` + `Bearer JWT`），从 `sub_content.output.m3u8` 提取直播 m3u8 地址。
-
 ### 状态映射修正
 
 API 的 `status_label` 不可靠，改用 `sub_status` 数值映射：`1→直播中`、`3,5→回放生成中`、`6,7→可回放`。

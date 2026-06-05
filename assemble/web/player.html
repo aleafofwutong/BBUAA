@@ -76,6 +76,43 @@
       border-color: #2e7d32;
       color: #81c784;
     }
+    .status-badge.generating {
+      border-color: #f57c00;
+      color: #ffb74d;
+    }
+
+    /* ---- 直播/回放切换栏 ---- */
+    .mode-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0.5rem 1.2rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .mode-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 0.4rem 0.9rem;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      transition: all 0.15s;
+    }
+    .mode-btn:hover:not(:disabled) { background: #1f2a3a; color: var(--text); }
+    .mode-btn.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    .mode-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .mode-hint {
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-left: 0.5rem;
+    }
 
     /* ---- main layout ---- */
     .main {
@@ -393,6 +430,13 @@
     <span class="status-badge playback" id="statusBadge">回放</span>
   </div>
 
+  <!-- 直播/回放 切换 -->
+  <div class="mode-bar" id="modeBar">
+    <button class="mode-btn" data-mode="live" id="modeLive" disabled>🔴 直播</button>
+    <button class="mode-btn active" data-mode="replay" id="modeReplay" disabled>📼 回放</button>
+    <span class="mode-hint" id="modeHint"></span>
+  </div>
+
   <!-- main -->
   <div class="main">
     <!-- video -->
@@ -481,6 +525,8 @@
     let videoDuration = 0;
     let controlsTimer = null;
     let savedPptGuids = [];      // 缓存 PPT guid 列表，供下载使用
+    let courseSources = null;    // { live: {...}, replay: {...} }
+    let currentMode = "replay";  // "live" | "replay"
 
     // ========== helpers ==========
     function fmtTime(sec) {
@@ -504,9 +550,11 @@
     })();
 
     function appendClientUUID(url) {
-      // resource.msa.buaa.edu.cn 的视频需要 clientUUID 参数才能访问
-      if (!url || !url.includes('resource.msa.buaa.edu.cn')) return url;
+      // resource.msa.buaa.edu.cn 的 mp4 和 lmt*.buaa.edu.cn 的直播流都需要 clientUUID
+      if (!url) return url;
       if (url.includes('clientUUID=')) return url;
+      const needs = url.includes('resource.msa.buaa.edu.cn') || (url.includes('lmt') && url.includes('buaa.edu.cn'));
+      if (!needs) return url;
       const sep = url.includes('?') ? '&' : '?';
       return url + sep + 'clientUUID=' + CLIENT_UUID;
     }
@@ -522,10 +570,14 @@
     }
 
     function needsProxy(url) {
-      return url && (
-        url.includes('resource.msa.buaa.edu.cn') ||
-        url.includes('lmt') && url.includes('buaa.edu.cn')
-      );
+      // 所有 BUA 域名的视频都需要代理：
+      // - resource.msa.buaa.edu.cn: mp4 需要 cookie 注入
+      // - livepgc/lmt*.buaa.edu.cn: HLS 需要 Origin 头伪装
+      if (!url) return false;
+      if (!url.includes('buaa.edu.cn')) return false;
+      // 已经是代理 URL 的不再嵌套
+      if (url.startsWith('/api/proxy/')) return false;
+      return true;
     }
 
     async function apiJson(path) {
@@ -558,24 +610,25 @@
 
         // 更新标题
         $('#courseTitle').textContent = d.title || '未知课程';
+        const statusText = d.status_label === '直播中' ? '🔴 直播中' :
+                           d.status_label === '回放' ? '📼 回放' : (d.status_label || '未知');
         $('#courseMeta').textContent = [
-          d.lecturer_name, d.room_name, d.sub_title, '状态: ' + (d.status_label || '未知')
+          statusText, d.lecturer_name, d.room_name, d.sub_title
         ].filter(Boolean).join(' · ');
 
         // 状态徽章（用后端修正后的 status_label）
         const rawStatus = d.status_label || '';
-        const isLive = rawStatus.includes('直播');
-        const isPreview = rawStatus.includes('预告') || rawStatus.includes('未开始');
-        const isPlayback = rawStatus.includes('回放') || rawStatus.includes('已结束');
+        const isLive = rawStatus === '直播中';
+        const isPlayback = rawStatus === '回放';
         if (isLive) {
-          statusBadge.textContent = '直播中';
+          statusBadge.textContent = '🔴 直播中';
           statusBadge.className = 'status-badge live';
-        } else if (isPreview) {
-          statusBadge.textContent = rawStatus;
-          statusBadge.className = 'status-badge';
-        } else {
-          statusBadge.textContent = isPlayback ? '回放' : rawStatus || '未知';
+        } else if (isPlayback) {
+          statusBadge.textContent = '📼 回放';
           statusBadge.className = 'status-badge playback';
+        } else {
+          statusBadge.textContent = rawStatus || '未知';
+          statusBadge.className = 'status-badge';
         }
 
         // 2. PPT resource_guid：收集所有候选 GUID（URL 参数 + 后端解析的 ppt_guids 列表）
@@ -596,28 +649,23 @@
           pptPromise = apiJson(pptUrl).catch(() => ({ list: [], used_guid: '' }));
         }
 
-        // 4. 视频地址：后端已经解析好 primary_video_url 和 is_m3u8
-        //    如果 URL 需要 cookie 认证，走 Flask 代理
-        let videoUrl = d.primary_video_url || d.playback_url || '';
-        let isM3u8 = d.is_m3u8 || false;
+        // 4. 视频源：后端返回 sources.live 和 sources.replay
+        courseSources = d.sources || {
+          live: { available: false, url: '', is_m3u8: false, label: '🔴 直播' },
+          replay: { available: false, url: '', is_m3u8: false, label: '📼 回放' },
+        };
 
-        // 如果仍然没有视频，尝试 teacher_video / ppt_video / trans_socket_url
-        if (!videoUrl && d.teacher_video && d.teacher_video.preview_url) {
-          videoUrl = d.teacher_video.preview_url;
-          isM3u8 = d.teacher_video.is_m3u8 || false;
-        }
-        if (!videoUrl && d.ppt_video && d.ppt_video.preview_url) {
-          videoUrl = d.ppt_video.preview_url;
-          isM3u8 = d.ppt_video.is_m3u8 || false;
-        }
-        if (!videoUrl && d.trans_socket_url) {
-          videoUrl = d.trans_socket_url;
-          isM3u8 = true;
-        }
+        // 默认模式：直播中 → live，回放 → replay，都有则优先直播
+        currentMode = (d.status_label === '直播中') ? 'live' : 'replay';
+        updateModeButtons();
 
-        // 给 resource.msa.buaa.edu.cn 的视频追加 clientUUID（必须！否则 403）
+        // 选当前模式对应的源
+        let src = courseSources[currentMode];
+        let videoUrl = src.available ? src.url : '';
+        let isM3u8 = src.is_m3u8 || false;
+
+        // 处理 URL
         videoUrl = appendClientUUID(videoUrl);
-        // 路由视频通过代理（解决跨域 cookie 问题）
         const rawVideoUrl = videoUrl;
         if (needsProxy(videoUrl)) {
           videoUrl = proxyVideo(videoUrl);
@@ -627,23 +675,20 @@
 
         // 无视频也无 PPT
         if (!videoUrl && pptSlides.length === 0) {
-          if (isPreview) {
-            videoLoading.innerHTML = '<span>📅 该课程尚未开始，暂无视频和 PPT</span>';
-          } else {
-            videoLoading.innerHTML = '<span>⚠ 没有可用的视频或 PPT 数据<br><small>请确认 Cookie 未过期，或尝试在原网页悬停视频区域后再刷新</small></span>';
-          }
+          const hint = currentMode === 'live' ? '暂无直播流' : '回放生成中，请稍后查看';
+          videoLoading.innerHTML = `<span>⚠ ${hint}<br><small>无视频和 PPT 数据</small></span>`;
           return;
         }
 
         // 初始化视频
         if (videoUrl) {
-          // 对于没有 auth_key 的 HLS 流，也走代理
           if (isM3u8 && !videoUrl.includes('auth_key') && needsProxy(rawVideoUrl)) {
             videoUrl = proxyVideo(rawVideoUrl);
           }
           initVideo(videoUrl, isM3u8);
         } else {
-          videoLoading.innerHTML = '<span>📹 未找到视频地址<br><small>该课程可能尚未生成回放，或需要在原网页悬停触发</small></span>';
+          const hint = currentMode === 'live' ? '暂无直播流' : '回放生成中…';
+          videoLoading.innerHTML = `<span>📹 ${hint}</span>`;
         }
 
         // 渲染 PPT
@@ -653,7 +698,8 @@
           if (!videoUrl) videoLoading.classList.add('hidden');
           pptInfo.textContent = `共 ${pptSlides.length} 页`;
         } else {
-          pptDisplay.innerHTML = '<div class="ppt-placeholder">该课程没有 PPT 数据<br><small>（可能是纯板书课程，或PPT尚未上传）</small></div>';
+          const pptHint = currentMode === 'live' ? '直播暂无 PPT 数据' : 'PPT 尚未上传或生成中';
+          pptDisplay.innerHTML = `<div class="ppt-placeholder">${pptHint}</div>`;
         }
 
         // 如果是从 livingroom 抓取的视频，提示用户
@@ -667,6 +713,61 @@
         videoLoading.innerHTML = `<span>⚠ 加载失败: ${err.message}<br><small>请检查 Cookie 是否过期</small></span>`;
       }
     }
+
+    // ========== mode switching ==========
+    function updateModeButtons() {
+      const src = courseSources;
+      if (!src) return;
+
+      const liveBtn = $('#modeLive');
+      const replayBtn = $('#modeReplay');
+      const hint = $('#modeHint');
+
+      // 两个按钮始终可点，尝试对应的源
+      liveBtn.disabled = false;
+      replayBtn.disabled = false;
+
+      liveBtn.classList.toggle('active', currentMode === 'live');
+      replayBtn.classList.toggle('active', currentMode === 'replay');
+
+      if (currentMode === 'live') {
+        hint.textContent = src.live.available ? '' : '（暂无直播流，尝试加载中…）';
+      } else {
+        hint.textContent = src.replay.available ? '' : '（回放可能尚未生成）';
+      }
+    }
+
+    function switchMode(mode) {
+      if (currentMode === mode) return;
+      if (!courseSources) return;
+
+      // 销毁旧播放器
+      if (hls) { hls.destroy(); hls = null; }
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+
+      currentMode = mode;
+      updateModeButtons();
+
+      let src = courseSources[mode];
+      let videoUrl = src.available ? src.url : '';
+      videoUrl = appendClientUUID(videoUrl);
+      if (needsProxy(videoUrl)) videoUrl = proxyVideo(videoUrl);
+
+      if (videoUrl) {
+        videoLoading.classList.remove('hidden');
+        videoLoading.innerHTML = '<div class="spinner"></div><span>正在加载…</span>';
+        initVideo(videoUrl, src.is_m3u8 || false);
+      } else {
+        const msgs = { live: '⚠ 暂无直播流<br><small>该课程当前没有在直播</small>',
+                       replay: '⚠ 回放生成中<br><small>请稍后再试</small>' };
+        videoLoading.innerHTML = `<span>${msgs[mode] || '暂无视频'}</span>`;
+      }
+    }
+
+    $('#modeLive').addEventListener('click', () => switchMode('live'));
+    $('#modeReplay').addEventListener('click', () => switchMode('replay'));
 
     // ========== video ==========
     function initVideo(url, isM3u8) {

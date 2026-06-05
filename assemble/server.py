@@ -151,7 +151,19 @@ def create_app(cookie_path: Path | None = None) -> Flask:
             per_page=min(50, max(1, int(request.args.get("per_page", 20)))),
         )
         try:
+            # 有状态筛选时拉全量（当天课程通常 < 500），避免分页导致漏数据
+            status_filter = request.args.get("status_filter", "").strip()
+            if status_filter:
+                filters.per_page = 500
+
             result = get_client().search(filters)
+
+            if status_filter and result.get("list"):
+                label_map = {"live": "直播中", "playback": "回放", "generating": "回放生成中"}
+                target = label_map.get(status_filter, "")
+                if target:
+                    result["list"] = [c for c in result["list"] if c.get("status_label") == target]
+                    result["total"] = len(result["list"])
             return jsonify({**result, "filters": asdict(filters)})
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)}), 500
@@ -222,6 +234,14 @@ def create_app(cookie_path: Path | None = None) -> Flask:
                     detail["ppt_resource_guid"] = ppt_guids[0]
                 detail["_livingroom_scraped"] = True
 
+            # debug: 在响应中暴露视频 URL 解析情况
+            detail["_debug"] = {
+                "primary": (detail.get("primary_video_url") or "")[:200],
+                "is_m3u8": detail.get("is_m3u8", False),
+                "trans_socket": (detail.get("trans_socket_url") or "")[:200],
+                "playback": (detail.get("playback_url") or "")[:200],
+                "has_video": detail.get("has_video", False),
+            }
             return jsonify({"ok": True, "detail": detail})
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)}), 500
@@ -554,6 +574,45 @@ def create_app(cookie_path: Path | None = None) -> Flask:
                 }), 502
 
             content_type = resp.headers.get("content-type", "video/mp4")
+
+            # ---- HLS 播放列表：重写分片 URL，全部走代理 ----
+            is_m3u8 = "mpegurl" in content_type or url.endswith(".m3u8")
+            if is_m3u8:
+                from urllib.parse import quote as _url_quote, urljoin as _urljoin
+                raw = resp.text
+                # 解析原始 m3u8 的 base URL（用于解析相对路径）
+                base_url = url if url.endswith("/") else url.rsplit("/", 1)[0] + "/"
+
+                def _make_proxy(seg: str) -> str:
+                    if seg.startswith("/api/proxy/"):
+                        return seg
+                    # 相对路径 → 绝对路径
+                    if not seg.startswith("http"):
+                        seg = _urljoin(base_url, seg)
+                    return "/api/proxy/video?url=" + _url_quote(seg, safe="")
+
+                lines = raw.split("\n")
+                rewritten_lines = []
+                for line in lines:
+                    stripped = line.rstrip("\r")
+                    if stripped and not stripped.startswith("#"):
+                        # 非注释行 = 分片 URL，改写为代理
+                        rewritten_lines.append(_make_proxy(stripped))
+                    else:
+                        rewritten_lines.append(stripped)
+                rewritten = "\n".join(rewritten_lines)
+
+                from flask import Response as _Response
+                return _Response(
+                    rewritten,
+                    status=resp.status_code,
+                    headers={
+                        "Content-Type": content_type,
+                        "Access-Control-Allow-Origin": "*",
+                        "Cache-Control": "no-cache",
+                    },
+                )
+
             content_length = resp.headers.get("content-length", "")
 
             from flask import Response as _Response

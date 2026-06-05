@@ -4,6 +4,8 @@ const state = {
   total: 0,
   source: "",
   loggedIn: false,
+  filterMode: "all",
+  allCourses: [],
 };
 
 const els = {
@@ -24,6 +26,7 @@ const els = {
   nextPage: document.getElementById("nextPage"),
   shutdownBtn: document.getElementById("shutdownBtn"),
   logoutBtn: document.getElementById("logoutBtn"),
+  filterToggle: document.getElementById("filterToggle"),
   collegeSelect: document.getElementById("collegeSelect"),
   termSelect: document.getElementById("termSelect"),
   campusSelect: document.getElementById("campusSelect"),
@@ -166,13 +169,31 @@ function formParams() {
   }
   params.set("page", String(state.page));
   params.set("per_page", String(state.perPage));
+  // 将筛选模式传给后端
+  if (state.filterMode !== "all") {
+    params.set("status_filter", state.filterMode);
+  }
   return params;
 }
 
+function applyFilter(courses) {
+  // 筛选已在服务端完成，前端不再二次过滤
+  return courses;
+}
+
+function updateFilterButtons() {
+  els.filterToggle.querySelectorAll(".toggle-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.filter === state.filterMode);
+  });
+}
+
 function renderCourses(list) {
-  if (!list.length) {
-    els.courseBody.innerHTML =
-      '<tr><td colspan="8" class="empty">没有匹配的课程</td></tr>';
+  const filtered = applyFilter(list);
+  if (!filtered.length) {
+    const hint = state.filterMode === "live" ? "没有正在直播的课程" :
+                 state.filterMode === "playback" ? "没有可回放的课程" :
+                 state.filterMode === "generating" ? "没有回放生成中的课程" : "没有匹配的课程";
+    els.courseBody.innerHTML = `<tr><td colspan="8" class="empty">${hint}</td></tr>`;
     return;
   }
 
@@ -197,7 +218,7 @@ function renderCourses(list) {
         <td>${escapeHtml(c.kkxy_name || "-")}</td>
         <td>${escapeHtml(time || "-")}</td>
         <td>${escapeHtml(c.room_name || "-")}</td>
-        <td>${escapeHtml(c.status_label || "-")}</td>
+        <td title="${escapeAttr(c._raw_status || '')}">${escapeHtml(c.status_label || "-")}</td>
         <td><a href="${escapeAttr(playerUrl)}" class="play-link" title="打开播放器">▶</a></td>
       </tr>`;
     })
@@ -245,7 +266,8 @@ async function runSearch() {
     const data = await api(`/api/courses/search?${params.toString()}`);
     state.total = Number(data.total || 0);
     state.source = data.source || "";
-    renderCourses(data.list || []);
+    state.allCourses = data.list || [];
+    renderCourses(state.allCourses);
     const date = new FormData(els.form).get("create_at");
     const dateHint = date ? ` · 日期 ${date}` : "";
     const msgHint = data.msg && state.total === 0 ? ` · ${data.msg}` : "";
@@ -274,6 +296,9 @@ document.getElementById("resetBtn").addEventListener("click", () => {
   els.roomSelect.innerHTML = '<option value="">先选择教学楼</option>';
   state.page = 1;
   state.total = 0;
+  state.filterMode = "all";
+  state.allCourses = [];
+  updateFilterButtons();
   renderCourses([]);
   els.resultMeta.textContent = "";
   updatePager();
@@ -382,6 +407,24 @@ if (dateInput) {
   dateInput.addEventListener("change", () => {
     state.page = 1;
     runSearch();
+  });
+}
+
+// ---- 直播/回放 筛选切换 ----
+if (els.filterToggle) {
+  els.filterToggle.addEventListener("click", (e) => {
+    const btn = e.target.closest(".toggle-btn");
+    if (!btn) return;
+    state.filterMode = btn.dataset.filter;
+    state.page = 1;
+    updateFilterButtons();
+    // 始终触发后端搜索，确保拿到完整数据（直接客户端过滤可能漏掉直播课）
+    const dateInp = els.form.querySelector('input[name="create_at"]');
+    if (dateInp && !dateInp.value) dateInp.value = new Date().toISOString().slice(0, 10);
+    runSearch();
+    els.resultMeta.textContent = state.filterMode === "live" ? "筛选：直播中" :
+                                 state.filterMode === "playback" ? "筛选：可回放" :
+                                 state.filterMode === "generating" ? "筛选：回放生成中" : "";
   });
 }
 

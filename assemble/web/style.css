@@ -214,6 +214,27 @@ button:disabled {
   font-size: 0.85rem;
 }
 
+.filter-toggle {
+  display: flex;
+  gap: 4px;
+}
+.toggle-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 0.25rem 0.6rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.78rem;
+  transition: all 0.15s;
+}
+.toggle-btn:hover { background: #243247; color: var(--text); }
+.toggle-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
 .loading,
 .error {
   margin-bottom: 0.75rem;

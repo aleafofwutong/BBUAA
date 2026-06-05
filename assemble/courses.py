@@ -32,13 +32,14 @@ PPT_TIMELINE_URL = f"{CLASSROOM_BASE}/pptnote/v1/schedule/search-ppt"
 LIVINGROOM_URL = f"{CLASSROOM_BASE}/livingroom"
 
 # sub_status → 真实状态标签（API 返回的 status_label 经常不准）
+# 经验证：API 的"预告"=正在直播，"直播中"=回放生成中，"回放"=可观看
 _STATUS_MAP: dict[int, str] = {
-    1: "预告",
+    1: "直播中",       # API标"预告"，实际正在直播
     2: "未开始",
-    3: "直播中",
+    3: "回放生成中",    # API标"直播中"，实际回放未就绪
     4: "已结束",
     5: "回放生成中",
-    6: "回放",
+    6: "回放",         # 可观看回放
     7: "回放",
 }
 
@@ -241,8 +242,6 @@ class ClassroomClient:
             "unique_course": 1,
             "with_sub_duration": 1,
             "with_sub_data": 1,
-            "sub_live_status": "",
-            "sub_public": "",
             "course_student_type": "",
             "like_title": 1 if filters.title else "",
             "has_frame": 1,
@@ -683,8 +682,14 @@ def _parse_course_detail(item: dict[str, Any]) -> dict[str, Any]:
         if not ppt_resource_guid and ppt_segment["resource_guid"]:
             ppt_resource_guid = ppt_segment["resource_guid"]
 
-    # 直播流地址（如果有的话）
+    # 直播流地址：trans_socket_url 通常为空，实际在 output.m3u8 / output_student.m3u8
     trans_socket_url = sub_content.get("trans_socket_url", "")
+    if not trans_socket_url:
+        for section in ("output", "output_student", "tts"):
+            url = (sub_content.get(section) or {}).get("m3u8", "")
+            if url and "buaa" in url:
+                trans_socket_url = url
+                break
 
     # ---- 真实状态判断 ----
     sub_status_val = _to_int(item.get("sub_status", 0))
@@ -714,13 +719,16 @@ def _parse_course_detail(item: dict[str, Any]) -> dict[str, Any]:
         primary_video_url = ppt_video["preview_url"]
         primary_is_m3u8 = ppt_video["is_m3u8"]
 
-    # 兜底：递归搜索整个 item，找到任意 mp4/m3u8 URL
+    # 兜底：递归搜索整个 item，找到实际的视频 URL（https:// 开头）
     if not primary_video_url:
         def _find_video_url(obj: Any, depth: int = 0) -> str:
             if depth > 6:
                 return ""
             if isinstance(obj, str):
-                if ("mp4" in obj or "m3u8" in obj) and "resource.msa.buaa.edu.cn" in obj:
+                # 只匹配以 https:// 开头的真实 URL，避免匹配到整个 JSON 字符串
+                if obj.startswith("https://") and ".m3u8" in obj and "buaa" in obj:
+                    return obj
+                if obj.startswith("https://") and ".mp4" in obj and "buaa" in obj:
                     return obj
             elif isinstance(obj, dict):
                 for v in obj.values():
@@ -738,6 +746,21 @@ def _parse_course_detail(item: dict[str, Any]) -> dict[str, Any]:
         if primary_video_url:
             primary_is_m3u8 = ".m3u8" in primary_video_url
             has_any_video = True
+
+    # 分别判断直播和回放是否有可用视频
+    live_url = trans_socket_url
+    # 回放地址：优先 save_playback.contents，其次 teacher_video，最后 ppt_video
+    replay_url = playback_url
+    replay_is_m3u8 = is_m3u8
+    if not replay_url and teacher_video:
+        replay_url = teacher_video["preview_url"]
+        replay_is_m3u8 = teacher_video["is_m3u8"]
+    if not replay_url and ppt_video:
+        replay_url = ppt_video["preview_url"]
+        replay_is_m3u8 = ppt_video["is_m3u8"]
+
+    has_live = bool(live_url)
+    has_replay = bool(replay_url)
 
     return {
         "course_id": str(item.get("course_id") or item.get("id", "")),
@@ -759,7 +782,7 @@ def _parse_course_detail(item: dict[str, Any]) -> dict[str, Any]:
         # 资源标识
         "sub_resource_guid": item.get("sub_resource_guid", ""),
         "ppt_resource_guid": ppt_resource_guid,
-        # 视频
+        # 视频（兼容旧字段）
         "primary_video_url": primary_video_url,
         "is_m3u8": primary_is_m3u8,
         "playback_url": playback_url,
@@ -768,6 +791,21 @@ def _parse_course_detail(item: dict[str, Any]) -> dict[str, Any]:
         "teacher_video": teacher_video,
         "ppt_segment": ppt_segment,
         "teacher_segment": teacher_segment,
+        # ---- 新增：直播/回放 分开的数据源 ----
+        "sources": {
+            "live": {
+                "available": has_live,
+                "url": live_url,
+                "is_m3u8": True,  # 直播都是 m3u8
+                "label": "🔴 直播",
+            },
+            "replay": {
+                "available": has_replay,
+                "url": replay_url,
+                "is_m3u8": replay_is_m3u8,
+                "label": "📼 回放",
+            },
+        },
     }
 
 
@@ -876,7 +914,9 @@ def _normalize_live_item(
     begin_ts = _to_int(begin)
     # 用 sub_status 修正 status_label（API 返回的经常不准）
     sub_status_val = _to_int(item.get("sub_status", 0))
-    real_status = _STATUS_MAP.get(sub_status_val, item.get("status_label", "未知"))
+    live_status_val = _to_int(item.get("live_status", 0))
+    api_label = item.get("status_label", "")  # API 原始状态文字
+    real_status = _STATUS_MAP.get(sub_status_val, api_label or "未知")
 
     return {
         "course_id": item.get("course_id") or item.get("id"),
@@ -888,6 +928,8 @@ def _normalize_live_item(
         "room_name": item.get("room_name", ""),
         "sub_title": item.get("sub_title", ""),
         "status_label": real_status,
+        # 保留原始字段方便排查
+        "_raw_status": f"{api_label} (sub={sub_status_val}, live={live_status_val})",
         "term_name": item.get("term_name", ""),
         "course_time": _format_timestamp(begin_ts),
         "course_begin_ts": begin_ts,
@@ -1012,6 +1054,9 @@ def _apply_local_filters(
                 c
                 for c in result
                 if start <= _to_int(c.get("course_begin_ts")) < end
+                # 正在直播的课程保留，即使它的 course_begin 在当天范围外
+                # （比如昨晚 23:50 开始、现在还在直播的课）
+                or c.get("status_label") == "直播中"
             ]
         else:
             result = [

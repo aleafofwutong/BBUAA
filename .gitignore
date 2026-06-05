@@ -1,0 +1,27 @@
+# 登录凭证（包含学号和 token，绝对不能提交）
+assemble/web/cookies.json
+cookies.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+dist/
+
+# 环境变量
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 下载的视频/PPT（大文件）
+*.mp4
+*.pptx
+*.zip

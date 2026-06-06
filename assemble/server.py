@@ -47,7 +47,7 @@ def create_app(cookie_path: Path | None = None) -> Flask:
         ).strip()
 
         if mode in {"direct", "none", "off", "0"}:
-            return None
+            return {}
         if mode in {"proxy", "custom"}:
             if not proxy_url:
                 raise ValueError("代理地址不能为空")
@@ -369,6 +369,7 @@ def create_app(cookie_path: Path | None = None) -> Flask:
             import requests as _requests
 
             dl_session = _requests.Session()
+            dl_session.trust_env = False
             for c in client.session.cookies:
                 dl_session.cookies.set(
                     c.name, c.value,
@@ -516,7 +517,9 @@ def create_app(cookie_path: Path | None = None) -> Flask:
                 for c in client.session.cookies
             )
             import requests as _requests
-            resp = _requests.get(
+            proxy_session = _requests.Session()
+            proxy_session.trust_env = False
+            resp = proxy_session.get(
                 url,
                 headers={
                     "Referer": "https://classroom.msa.buaa.edu.cn/",
@@ -602,7 +605,9 @@ def create_app(cookie_path: Path | None = None) -> Flask:
             # 用裸 requests 而非 session，避免 session 的域名级 cookie jar
             # 覆盖我们手动拼的 Cookie 头（resource.msa.buaa.edu.cn 需要全量 cookie）
             import requests as _requests
-            resp = _requests.get(
+            proxy_session = _requests.Session()
+            proxy_session.trust_env = False
+            resp = proxy_session.get(
                 url,
                 headers=proxy_headers,
                 proxies=client.proxies,

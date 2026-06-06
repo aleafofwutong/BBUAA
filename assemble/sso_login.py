@@ -45,6 +45,7 @@ def _browser_headers() -> dict[str, str]:
 
 def create_session() -> requests.Session:
     session = requests.Session()
+    session.trust_env = False
     session.headers.update(_browser_headers())
     return session
 

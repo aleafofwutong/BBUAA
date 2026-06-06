@@ -56,6 +56,34 @@ async function apiPost(path, body) {
   return data;
 }
 
+function selectedProxyConfig() {
+  if (!els.loginForm) return { proxy_mode: "direct", proxy_url: "" };
+  const fd = new FormData(els.loginForm);
+  const proxyMode = String(fd.get("proxy_mode") || "direct");
+  const proxyUrl = String(fd.get("proxy_url") || "").trim();
+  return {
+    proxy_mode: proxyMode,
+    proxy_url: proxyMode === "proxy" ? proxyUrl : "",
+  };
+}
+
+function authStatusPathWithProxy() {
+  const cfg = selectedProxyConfig();
+  const params = new URLSearchParams();
+  params.set("proxy_mode", cfg.proxy_mode);
+  if (cfg.proxy_url) params.set("proxy_url", cfg.proxy_url);
+  return `/api/auth/status?${params.toString()}`;
+}
+
+function syncProxyInputState() {
+  if (!els.loginForm) return;
+  const proxyInput = els.loginForm.querySelector('input[name="proxy_url"]');
+  const proxyMode = els.loginForm.querySelector('input[name="proxy_mode"]:checked');
+  if (proxyInput) {
+    proxyInput.disabled = !proxyMode || proxyMode.value !== "proxy";
+  }
+}
+
 function setStatus(text, ok) {
   els.status.textContent = text;
   els.status.className = "status " + (ok ? "ok" : "err");
@@ -434,6 +462,11 @@ loadMeta()
 loadAuth();
 
 if (els.loginForm) {
+  els.loginForm
+    .querySelectorAll('input[name="proxy_mode"]')
+    .forEach((input) => input.addEventListener("change", syncProxyInputState));
+  syncProxyInputState();
+
   els.loginForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     showAuthError("");
@@ -443,6 +476,7 @@ if (els.loginForm) {
       const data = await apiPost("/api/auth/login", {
         username: String(fd.get("username") || "").trim(),
         password: String(fd.get("password") || "").trim(),
+        ...selectedProxyConfig(),
       });
       state.loggedIn = true;
       setStatus(`已登录 · ${data.user}`, true);
@@ -467,7 +501,7 @@ if (els.reuseCookieBtn) {
     showAuthError("");
     showAuthLoading(true);
     try {
-      const data = await api("/api/auth/status");
+      const data = await api(authStatusPathWithProxy());
       if (!data.logged_in) {
         throw new Error("未发现可用 cookie，请先登录一次");
       }

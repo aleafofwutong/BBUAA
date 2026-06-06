@@ -1,0 +1,4 @@
+flask>=3.0
+requests>=2.31
+pillow>=9.0
+python-pptx>=0.6

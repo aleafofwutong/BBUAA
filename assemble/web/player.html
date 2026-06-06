@@ -435,6 +435,8 @@
     <button class="mode-btn" data-mode="live" id="modeLive" disabled>🔴 直播</button>
     <button class="mode-btn active" data-mode="replay" id="modeReplay" disabled>📼 回放</button>
     <span class="mode-hint" id="modeHint"></span>
+    <button class="mode-btn" id="btnRecord" style="margin-left:auto;display:none;" title="录制当前直播流">⏺ 录制</button>
+    <span class="mode-hint" id="recordStatus" style="color:#e53935;display:none;"></span>
   </div>
 
   <!-- main -->
@@ -527,6 +529,7 @@
     let savedPptGuids = [];      // 缓存 PPT guid 列表，供下载使用
     let courseSources = null;    // { live: {...}, replay: {...} }
     let currentMode = "replay";  // "live" | "replay"
+    let cachedRoomName = '';     // 教室名，供直播缓存查找用
 
     // ========== helpers ==========
     function fmtTime(sec) {
@@ -664,6 +667,38 @@
         let videoUrl = src.available ? src.url : '';
         let isM3u8 = src.is_m3u8 || false;
 
+        // 缓存对应的教室名
+        cachedRoomName = d.room_name || '';
+
+        // 如果没有直播流，尝试从直播空间缓存中查找
+        if (!videoUrl && currentMode === 'live') {
+          try {
+            // 先按 sub_id 查，再按 room_name 查
+            let cacheResp = await fetch(`/api/live/cache?sub_id=${SUB_ID}`);
+            if (!cacheResp.ok && cachedRoomName) {
+              cacheResp = await fetch(`/api/live/cache?room=${encodeURIComponent(cachedRoomName)}`);
+            }
+            if (cacheResp.ok) {
+              const cacheData = await cacheResp.json();
+              if (cacheData.ok && cacheData.entry && cacheData.entry.live_url) {
+                videoUrl = cacheData.entry.live_url;
+                isM3u8 = true;
+                courseSources.live.url = videoUrl;
+                courseSources.live.available = true;
+                updateModeButtons();
+                const matchType = cacheData.matched_by === 'room_name' ? '教室名匹配' : 'sub_id匹配';
+                console.log(`使用缓存直播链接 (${matchType}):`, videoUrl.slice(0, 100));
+              } else {
+                $('#modeHint').textContent = '（缓存无可用URL，需先在搜索页⬇缓存）';
+              }
+            } else {
+              $('#modeHint').textContent = '（缓存未命中，该教室未缓存过直播）';
+            }
+          } catch (e) {
+            $('#modeHint').textContent = '（缓存查询异常: ' + (e.message||'网络错误') + '）';
+          }
+        }
+
         // 处理 URL
         videoUrl = appendClientUUID(videoUrl);
         const rawVideoUrl = videoUrl;
@@ -714,6 +749,48 @@
       }
     }
 
+    // ========== 直播流 3s 超时 + 缓存回退 ==========
+    let liveTimeoutId = null;
+    let liveCacheTried = false;
+
+    function startLiveTimeout() {
+      liveCacheTried = false;
+      clearLiveTimeout();
+      liveTimeoutId = setTimeout(async () => {
+        if (currentMode !== 'live') return;
+        console.log('直播流 3s 未加载，尝试直播空间缓存...');
+        liveCacheTried = true;
+
+        // 销毁当前失败的 hls
+        if (hls) { hls.destroy(); hls = null; }
+        video.pause();
+
+        try {
+          let cacheResp = await fetch(`/api/live/cache?sub_id=${SUB_ID}`);
+          if (!cacheResp.ok && cachedRoomName) {
+            cacheResp = await fetch(`/api/live/cache?room=${encodeURIComponent(cachedRoomName)}`);
+          }
+          if (cacheResp.ok) {
+            const cacheData = await cacheResp.json();
+            if (cacheData.ok && cacheData.entry && cacheData.entry.live_url) {
+              let cachedUrl = cacheData.entry.live_url;
+              cachedUrl = appendClientUUID(cachedUrl);
+              if (needsProxy(cachedUrl)) cachedUrl = proxyVideo(cachedUrl);
+              console.log('使用缓存直播链接');
+              initVideo(cachedUrl, true);
+              return;
+            }
+          }
+        } catch (e) {}
+
+        videoLoading.innerHTML = '<span>⚠ 直播流加载失败<br><small>API 和缓存均无可用链接</small></span>';
+      }, 3000);
+    }
+
+    function clearLiveTimeout() {
+      if (liveTimeoutId) { clearTimeout(liveTimeoutId); liveTimeoutId = null; }
+    }
+
     // ========== mode switching ==========
     function updateModeButtons() {
       const src = courseSources;
@@ -723,24 +800,30 @@
       const replayBtn = $('#modeReplay');
       const hint = $('#modeHint');
 
-      // 两个按钮始终可点，尝试对应的源
       liveBtn.disabled = false;
       replayBtn.disabled = false;
 
       liveBtn.classList.toggle('active', currentMode === 'live');
       replayBtn.classList.toggle('active', currentMode === 'replay');
+      updateRecordButton();
 
       if (currentMode === 'live') {
-        hint.textContent = src.live.available ? '' : '（暂无直播流，尝试加载中…）';
+        if (src.live.available) {
+          hint.textContent = '';
+        } else {
+          hint.textContent = '（无直播URL，查缓存中…）';
+        }
       } else {
         hint.textContent = src.replay.available ? '' : '（回放可能尚未生成）';
       }
     }
 
-    function switchMode(mode) {
+    async function switchMode(mode) {
       if (currentMode === mode) return;
       if (!courseSources) return;
 
+      clearLiveTimeout();
+      liveCacheTried = false;
       // 销毁旧播放器
       if (hls) { hls.destroy(); hls = null; }
       video.pause();
@@ -752,15 +835,37 @@
 
       let src = courseSources[mode];
       let videoUrl = src.available ? src.url : '';
+
+      // 直播模式无 URL 时查缓存（先 sub_id 再 room_name）
+      if (!videoUrl && mode === 'live') {
+        try {
+          let cacheResp = await fetch(`/api/live/cache?sub_id=${SUB_ID}`);
+          if (!cacheResp.ok && cachedRoomName) {
+            cacheResp = await fetch(`/api/live/cache?room=${encodeURIComponent(cachedRoomName)}`);
+          }
+          if (cacheResp.ok) {
+            const cacheData = await cacheResp.json();
+            if (cacheData.ok && cacheData.entry && cacheData.entry.live_url) {
+              videoUrl = cacheData.entry.live_url;
+              if (courseSources) {
+                courseSources.live.url = videoUrl;
+                courseSources.live.available = true;
+                updateModeButtons();
+              }
+            }
+          }
+        } catch (e) {}
+      }
+
       videoUrl = appendClientUUID(videoUrl);
       if (needsProxy(videoUrl)) videoUrl = proxyVideo(videoUrl);
 
       if (videoUrl) {
         videoLoading.classList.remove('hidden');
         videoLoading.innerHTML = '<div class="spinner"></div><span>正在加载…</span>';
-        initVideo(videoUrl, src.is_m3u8 || false);
+        initVideo(videoUrl, !!(src.url || '').includes('.m3u8') || src.is_m3u8 || false);
       } else {
-        const msgs = { live: '⚠ 暂无直播流<br><small>该课程当前没有在直播</small>',
+        const msgs = { live: '⚠ 暂无直播流<br><small>该课程当前没有在直播，缓存中也未找到</small>',
                        replay: '⚠ 回放生成中<br><small>请稍后再试</small>' };
         videoLoading.innerHTML = `<span>${msgs[mode] || '暂无视频'}</span>`;
       }
@@ -769,14 +874,84 @@
     $('#modeLive').addEventListener('click', () => switchMode('live'));
     $('#modeReplay').addEventListener('click', () => switchMode('replay'));
 
+    // ---- 录制 ----
+    let isRecording = false;
+    const btnRecord = $('#btnRecord');
+    const recordStatus = $('#recordStatus');
+
+    function updateRecordButton() {
+      if (currentMode === 'live' && (courseSources?.live?.url || '')) {
+        btnRecord.style.display = '';
+      } else {
+        btnRecord.style.display = 'none';
+        recordStatus.style.display = 'none';
+      }
+    }
+
+    btnRecord.addEventListener('click', async () => {
+      if (isRecording) {
+        // 停止录制
+        btnRecord.disabled = true;
+        try {
+          const resp = await fetch('/api/record/stop', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sub_id: SUB_ID }),
+          });
+          const data = await resp.json();
+          if (data.ok) {
+            isRecording = false;
+            btnRecord.textContent = '⏺ 录制';
+            btnRecord.style.borderColor = '';
+            recordStatus.style.display = 'none';
+            toast('录制已停止');
+          }
+        } catch (e) { toast('停止录制失败'); }
+        btnRecord.disabled = false;
+      } else {
+        // 开始录制
+        const url = courseSources?.live?.url || '';
+        if (!url) { toast('无直播流地址'); return; }
+        btnRecord.disabled = true;
+        try {
+          const resp = await fetch('/api/record/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              sub_id: SUB_ID,
+              url: url,
+              title: document.getElementById('courseTitle')?.textContent || '',
+            }),
+          });
+          const data = await resp.json();
+          if (data.ok) {
+            isRecording = true;
+            btnRecord.textContent = '⏹ 停止录制';
+            btnRecord.style.borderColor = '#e53935';
+            recordStatus.textContent = '● 录制中';
+            recordStatus.style.display = '';
+            toast('录制已开始');
+          } else {
+            toast(data.error || '录制启动失败');
+          }
+        } catch (e) { toast('录制启动失败: ' + e.message); }
+        btnRecord.disabled = false;
+      }
+    });
+
     // ========== video ==========
     function initVideo(url, isM3u8) {
+      clearLiveTimeout();
       if (isM3u8 && Hls.isSupported()) {
-        // HLS 流通常自带 auth_key 鉴权参数，无需代理
+        // 直播流启动 3s 超时计时器
+        if (currentMode === 'live' && !liveCacheTried) {
+          startLiveTimeout();
+        }
         hls = new Hls({ enableWorker: true, lowLatencyMode: true });
         hls.loadSource(url);
         hls.attachMedia(video);
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          clearLiveTimeout();
           videoLoading.classList.add('hidden');
           videoDuration = hls.media?.duration || 0;
           video.play().catch(() => {});
@@ -785,6 +960,10 @@
         hls.on(Hls.Events.ERROR, (_, data) => {
           if (data.fatal) {
             console.error('HLS fatal error', data);
+            if (currentMode === 'live' && !liveCacheTried) {
+              // 不立即重连，让 timeout 去查缓存
+              return;
+            }
             toast('视频流断开，尝试重连…');
             hls.destroy();
             setTimeout(() => initVideo(url, true), 2000);
@@ -802,6 +981,7 @@
         // MP4 或直接 URL（通过代理解决跨域 cookie）
         video.src = url;
         video.addEventListener('loadedmetadata', () => {
+          clearLiveTimeout();
           videoLoading.classList.add('hidden');
           videoDuration = video.duration;
           updateTimeDisplay();

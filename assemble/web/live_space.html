@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BBUAA · 直播空间</title>
+  <style>
+    :root {
+      --bg: #0a0f14;
+      --surface: #141b23;
+      --border: #253040;
+      --text: #dde4f0;
+      --muted: #7d8fa8;
+      --accent: #4a9eff;
+      --danger: #ff5c5c;
+      --live: #e53935;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      min-height: 100vh;
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: 0.8rem 1.5rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+    .topbar h1 { font-size: 1.2rem; display: flex; align-items: center; gap: 0.5rem; }
+    .topbar .back { color: var(--accent); text-decoration: none; font-size: 0.85rem; }
+    .topbar .meta { color: var(--muted); font-size: 0.8rem; margin-left: auto; }
+    .container { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1rem; }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.2rem;
+      transition: border-color 0.2s;
+    }
+    .card.live { border-color: var(--live); }
+    .card .status-dot {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      margin-right: 4px;
+      background: #888;
+    }
+    .card .status-dot.working { background: #4caf50; animation: pulse 2s infinite; }
+    .card .status-dot.broken { background: var(--danger); }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .campus-group { margin-bottom: 1.5rem; }
+    .campus-group h2 {
+      font-size: 0.95rem;
+      color: var(--muted);
+      margin-bottom: 0.75rem;
+      padding: 0.4rem 0.8rem;
+      background: var(--surface);
+      border-radius: 8px;
+      border-left: 3px solid var(--accent);
+    }
+    .card h3 { font-size: 0.95rem; margin-bottom: 0.5rem; line-height: 1.4; }
+    .card .location {
+      font-size: 0.85rem;
+      color: var(--accent);
+      margin-bottom: 0.4rem;
+    }
+
+    .building-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
+      padding: 0.5rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .building-label {
+      font-size: 0.85rem;
+      color: var(--text);
+      font-weight: 600;
+      margin-right: 0.5rem;
+      min-width: 60px;
+    }
+    .inline-card {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.4rem 0.7rem;
+      border-radius: 8px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .inline-card.live { border-color: var(--live); }
+    .inline-card .room-num {
+      font-size: 0.85rem;
+      color: var(--accent);
+      font-weight: 600;
+      min-width: 2.5rem;
+    }
+    .inline-card .card-course {
+      font-size: 0.85rem;
+      color: var(--text);
+      max-width: 180px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .inline-card .card-teacher {
+      font-size: 0.78rem;
+      color: var(--muted);
+    }
+    .inline-card .btn-play {
+      padding: 0.25rem 0.5rem;
+      font-size: 0.75rem;
+      flex: none;
+    }
+    .inline-card .btn-del {
+      padding: 0.2rem 0.4rem;
+      font-size: 0.7rem;
+      flex: none;
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .inline-card .btn-del:hover {
+      border-color: var(--danger);
+      color: var(--danger);
+    }
+    .card .info { font-size: 0.82rem; color: var(--muted); line-height: 1.6; }
+    .card .info span { margin-right: 1rem; }
+    .card .actions { display: flex; gap: 0.5rem; margin-top: 1rem; }
+    .btn {
+      border: none; border-radius: 8px;
+      padding: 0.45rem 0.9rem;
+      cursor: pointer;
+      font-size: 0.82rem;
+      transition: background 0.15s;
+    }
+    .btn-play { background: var(--accent); color: #fff; flex: 1; }
+    .btn-play:hover { filter: brightness(1.1); }
+    .btn-del { background: transparent; border: 1px solid var(--border); color: var(--muted); }
+    .btn-del:hover { border-color: var(--danger); color: var(--danger); }
+    .btn-refresh { background: transparent; border: 1px solid var(--accent); color: var(--accent); font-size: 0.8rem; padding: 0.35rem 0.7rem; border-radius: 6px; cursor: pointer; margin-left: auto; }
+    .empty { text-align: center; color: var(--muted); padding: 3rem; font-size: 1rem; line-height: 2; }
+    .loading { text-align: center; padding: 3rem; color: var(--muted); }
+    .spinner {
+      display: inline-block;
+      width: 24px; height: 24px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .time-badge {
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-top: 0.5rem;
+      padding-top: 0.5rem;
+      border-top: 1px solid var(--border);
+    }
+    .toast {
+      position: fixed;
+      top: 1rem; left: 50%;
+      transform: translateX(-50%);
+      background: var(--danger); color: #fff;
+      padding: 0.5rem 1rem;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      z-index: 999;
+      animation: fadeIn 0.3s;
+    }
+    @keyframes fadeIn { from { opacity: 0; transform: translateX(-50%) translateY(-8px); } }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <a href="/" class="back">← 返回搜索</a>
+    <h1>📡 直播空间</h1>
+    <button class="btn-refresh" id="refreshBtn" title="刷新所有链接状态">🔄 刷新状态</button>
+    <span class="meta" id="cacheMeta"></span>
+  </div>
+  <div class="container">
+    <div class="loading" id="loading"><div class="spinner"></div><br>加载中…</div>
+    <div class="grid" id="grid"></div>
+    <div class="empty hidden" id="empty">
+      还没有缓存的直播链接<br>
+      <small>在课程搜索页面点击「📡 缓存」按钮来添加直播</small>
+    </div>
+  </div>
+
+  <script>
+    async function api(path, opts) {
+      const resp = await fetch(path, opts);
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+      return data;
+    }
+
+    function toast(msg) {
+      const el = document.createElement('div');
+      el.className = 'toast'; el.textContent = msg;
+      document.body.appendChild(el);
+      setTimeout(() => el.remove(), 3000);
+    }
+
+    function playLive(entry) {
+      const params = new URLSearchParams({
+        course_id: entry.course_id,
+        sub_id: entry.sub_id,
+        search_time: entry.search_time || '',
+        resource_guid: '',
+      });
+      window.open('/player/?' + params.toString(), '_blank');
+    }
+
+    async function deleteEntry(subId) {
+      if (!confirm('确定删除这个直播缓存吗？')) return;
+      try {
+        await api('/api/live/cache?sub_id=' + encodeURIComponent(subId), { method: 'DELETE' });
+        loadCache();
+      } catch (err) {
+        toast('删除失败: ' + err.message);
+      }
+    }
+
+    async function loadCache() {
+      const loading = document.getElementById('loading');
+      const empty = document.getElementById('empty');
+      const grid = document.getElementById('grid');
+      loading.classList.remove('hidden');
+      empty.classList.add('hidden');
+      grid.innerHTML = '';
+      try {
+        const data = await api('/api/live/cache');
+        const list = data.list || [];
+        document.getElementById('cacheMeta').textContent = `共 ${list.length} 个直播间`;
+        if (!list.length) {
+          empty.classList.remove('hidden');
+          empty.innerHTML = '还没有缓存的直播链接<br><small>在课程搜索页面点击「⬇」按钮来添加直播</small>';
+        } else {
+          // 按校区 → 教学楼分层次分组
+          const groups = {};
+          for (const entry of list) {
+            const campus = entry.campus || '未知校区';
+            const bld = entry.building || '其他';
+            if (!groups[campus]) groups[campus] = {};
+            if (!groups[campus][bld]) groups[campus][bld] = [];
+            groups[campus][bld].push(entry);
+          }
+          const campusOrder = ['学院路校区', '沙河校区', '杭州校区', '腾讯会议'];
+          let html = '';
+          for (const campus of campusOrder) {
+            if (!groups[campus]) continue;
+            const buildings = groups[campus];
+            html += `<div class="campus-group"><h2>🏫 ${esc(campus)}</h2>`;
+            for (const [bld, entries] of Object.entries(buildings)) {
+              html += `<div class="building-row"><span class="building-label">📌 ${esc(bld)}</span>`;
+              for (const entry of entries) {
+                const roomLabel = entry.room || '';
+                html += `
+                  <div class="card inline-card ${entry.url_working ? 'live' : ''}">
+                    <span class="status-dot ${entry.url_working ? 'working' : 'broken'}"></span>
+                    <span class="room-num">${esc(roomLabel)}</span>
+                    <span class="card-course">${esc(entry.title || '?')}</span>
+                    <span class="card-teacher">${esc(entry.lecturer_name || '-')}</span>
+                    <button class="btn btn-play" data-sub="${esc(entry.sub_id)}" ${entry.url_working ? '' : 'disabled'}>▶</button>
+                    <button class="btn btn-del" data-sub="${esc(entry.sub_id)}">🗑</button>
+                  </div>`;
+              }
+              html += '</div>';
+            }
+            html += '</div>';
+          }
+          // 兜底：未匹配校区的
+          const rest = list.filter(e => !campusOrder.includes(e.campus));
+          if (rest.length) {
+            html += `<div class="campus-group"><h2>🏫 其他</h2><div class="grid">`;
+            for (const entry of rest) {
+              html += `<div class="card ${entry.url_working ? 'live' : ''}">
+                <h3>${esc(entry.title||'?')}</h3>
+                <div class="info">${esc(entry.room_name||'')} · ${esc(entry.lecturer_name||'-')}</div>
+                <div class="actions">
+                  <button class="btn btn-play" data-sub="${esc(entry.sub_id)}">▶</button>
+                  <button class="btn btn-del" data-sub="${esc(entry.sub_id)}">🗑</button>
+                </div>
+              </div>`;
+            }
+            html += '</div></div>';
+          }
+          document.getElementById('grid').innerHTML = html;
+          // 绑定播放/删除事件
+          const cachedList = list;
+          document.getElementById('grid').querySelectorAll('.btn-play').forEach(btn => {
+            btn.addEventListener('click', () => {
+              const sub = btn.dataset.sub;
+              const entry = cachedList.find(e => e.sub_id === sub);
+              if (entry) playLive(entry);
+            });
+          });
+          document.getElementById('grid').querySelectorAll('.btn-del').forEach(btn => {
+            btn.addEventListener('click', () => deleteEntry(btn.dataset.sub));
+          });
+        }
+      } catch (err) {
+        toast('加载失败: ' + err.message);
+        document.getElementById('empty').classList.remove('hidden');
+        document.getElementById('empty').innerHTML = '加载失败<br><small>' + esc(err.message) + '</small>';
+      }
+      loading.classList.add('hidden');
+    }
+
+    function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+    document.getElementById('refreshBtn').addEventListener('click', () => {
+      toast('刷新中…');
+      loadCache();
+    });
+
+    loadCache();
+  </script>
+</body>
+</html>

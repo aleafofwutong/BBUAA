@@ -12,53 +12,18 @@ from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory
 
 from assemble.courses import ClassroomClient, SearchFilters
-from assemble.sso_login import (
-    COOKIE_FILE,
-    _proxy_from_env,
-    is_logged_in,
-    load_cookies,
-    login as sso_login,
-    save_cookies,
-)
+from assemble.sso_login import COOKIE_FILE, is_logged_in, load_cookies, login as sso_login, save_cookies
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
+LIVE_CACHE_FILE = Path(__file__).resolve().parent / "live_cache.json"
+RECORD_DIR = Path(__file__).resolve().parent / "recordings"
+RECORD_META_FILE = Path(__file__).resolve().parent / "recordings.json"
 
 
 def create_app(cookie_path: Path | None = None) -> Flask:
     app = Flask(__name__, static_folder=str(WEB_DIR), static_url_path="")
-    client_holder: dict[str, object] = {"client": None, "proxies": _proxy_from_env()}
+    client_holder: dict[str, ClassroomClient | None] = {"client": None}
     cookie_file = cookie_path or COOKIE_FILE
-
-    def parse_proxy_payload(payload: dict | None = None) -> dict[str, str] | None:
-        payload = payload or {}
-        mode = str(
-            payload.get("proxy_mode")
-            or payload.get("proxyMode")
-            or request.args.get("proxy_mode", "")
-            or request.args.get("proxyMode", "")
-            or "default"
-        ).strip().lower()
-        proxy_url = str(
-            payload.get("proxy_url")
-            or payload.get("proxyUrl")
-            or request.args.get("proxy_url", "")
-            or request.args.get("proxyUrl", "")
-            or ""
-        ).strip()
-
-        if mode in {"direct", "none", "off", "0"}:
-            return {}
-        if mode in {"proxy", "custom"}:
-            if not proxy_url:
-                raise ValueError("代理地址不能为空")
-            return {"http": proxy_url, "https": proxy_url}
-        return _proxy_from_env()
-
-    def set_proxy_payload(payload: dict | None = None) -> dict[str, str] | None:
-        proxies = parse_proxy_payload(payload)
-        client_holder["proxies"] = proxies
-        client_holder["client"] = None
-        return proxies
 
     def get_client() -> ClassroomClient:
         if client_holder["client"] is None:
@@ -68,9 +33,7 @@ def create_app(cookie_path: Path | None = None) -> Flask:
                     f"未检测到有效登录 cookie，请先运行: python -m assemble.sso_login "
                     f"(cookie 文件: {cookie_file})"
                 )
-            client = ClassroomClient.from_cookies(cookie_file)
-            client.proxies = client_holder["proxies"]  # type: ignore[assignment]
-            client_holder["client"] = client
+            client_holder["client"] = ClassroomClient.from_cookies(cookie_file)
         return client_holder["client"]
 
     @app.get("/")
@@ -94,8 +57,6 @@ def create_app(cookie_path: Path | None = None) -> Flask:
     @app.get("/api/auth/status")
     def auth_status():
         try:
-            if request.args.get("proxy_mode") or request.args.get("proxyMode"):
-                set_proxy_payload()
             session = load_cookies(cookie_file)
             if not is_logged_in(session):
                 return jsonify({"ok": True, "logged_in": False, "cookie_file": str(cookie_file)})
@@ -134,8 +95,7 @@ def create_app(cookie_path: Path | None = None) -> Flask:
             return jsonify({"ok": False, "error": "用户名和密码不能为空"}), 400
 
         try:
-            proxies = set_proxy_payload(payload)
-            session = sso_login(username, password, proxies=proxies)
+            session = sso_login(username, password)
             save_cookies(session, cookie_file)
             client_holder["client"] = None
             client = get_client()
@@ -369,7 +329,6 @@ def create_app(cookie_path: Path | None = None) -> Flask:
             import requests as _requests
 
             dl_session = _requests.Session()
-            dl_session.trust_env = False
             for c in client.session.cookies:
                 dl_session.cookies.set(
                     c.name, c.value,
@@ -507,7 +466,7 @@ def create_app(cookie_path: Path | None = None) -> Flask:
         url = _unquote(request.args.get("url", ""))
         if not url:
             return jsonify({"ok": False, "error": "缺少 url 参数"}), 400
-        allowed = ("resource.msa.buaa.edu.cn", "www.msa.buaa.edu.cn")
+        allowed = ("resource.msa.buaa.edu.cn", "www.msa.buaa.edu.cn", "video.msa.buaa.edu.cn")
         if not any(host in url for host in allowed):
             return jsonify({"ok": False, "error": "不允许的域名"}), 403
         try:
@@ -517,9 +476,7 @@ def create_app(cookie_path: Path | None = None) -> Flask:
                 for c in client.session.cookies
             )
             import requests as _requests
-            proxy_session = _requests.Session()
-            proxy_session.trust_env = False
-            resp = proxy_session.get(
+            resp = _requests.get(
                 url,
                 headers={
                     "Referer": "https://classroom.msa.buaa.edu.cn/",
@@ -605,9 +562,7 @@ def create_app(cookie_path: Path | None = None) -> Flask:
             # 用裸 requests 而非 session，避免 session 的域名级 cookie jar
             # 覆盖我们手动拼的 Cookie 头（resource.msa.buaa.edu.cn 需要全量 cookie）
             import requests as _requests
-            proxy_session = _requests.Session()
-            proxy_session.trust_env = False
-            resp = proxy_session.get(
+            resp = _requests.get(
                 url,
                 headers=proxy_headers,
                 proxies=client.proxies,
@@ -690,6 +645,296 @@ def create_app(cookie_path: Path | None = None) -> Flask:
             )
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)}), 502
+
+    # ---- 直播缓存 ----
+    # 校区与教学楼知识库（含复合楼名如 主-北、主-M）
+    _CAMPUSES = [
+        ("学院路校区", ["A", "B", "C", "D", "E", "F", "G",
+                        "主南", "主北", "主M", "主",
+                        "(一)", "(三)", "(五)"]),
+        ("沙河校区",   ["J0", "J1", "J2", "J3", "J4", "J5",
+                        "SH2", "SH3"]),
+        ("杭州校区",   ["教学一号楼", "教学二号楼", "科研一号楼", "科研二号楼"]),
+        ("腾讯会议",   []),
+    ]
+
+    # 复合楼名：实际格式是 "主-北"、"主-M" 但规范化为 "主北"、"主M"
+    _COMPOUND_BUILDINGS = {
+        "主-北": "主北", "主-M": "主M",
+        "主-南": "主南",
+    }
+
+    def _parse_room(room_name: str) -> dict:
+        """解析教室名 → {campus, building, room}。"""
+        raw = room_name.strip()
+        if "腾讯会议" in raw:
+            return {"campus": "腾讯会议", "building": "", "room": raw}
+
+        for campus, buildings in _CAMPUSES:
+            if campus == "腾讯会议":
+                continue
+            if raw.startswith(campus):
+                rest = raw[len(campus):]
+                building = ""
+                room = rest
+
+                # 先尝试复合楼名（"主-北202" → building="主北", room="202"）
+                for compound, canonical in sorted(_COMPOUND_BUILDINGS.items(), key=lambda x: -len(x[0])):
+                    if rest.startswith(compound):
+                        building = canonical
+                        after = rest[len(compound):]
+                        if after and after[0] in "-—－":
+                            after = after[1:]
+                        room = after if after else rest
+                        return {"campus": campus, "building": building, "room": room}
+
+                # 匹配已知教学楼（长名优先）
+                for b in sorted(buildings, key=len, reverse=True):
+                    if rest.startswith(b):
+                        building = b
+                        after = rest[len(b):]
+                        if after and after[0] in "-—－":
+                            after = after[1:]
+                        room = after if after else rest
+                        break
+                return {"campus": campus, "building": building, "room": room}
+
+        # 兜底
+        if "-" in raw:
+            parts = raw.rsplit("-", 1)
+            return {"campus": "", "building": parts[0], "room": parts[1]}
+        return {"campus": "", "building": "", "room": raw}
+
+    def _location_sort_key(entry: dict) -> tuple:
+        loc = _parse_room(entry.get("room_name", ""))
+        return (loc["campus"], loc["building"], loc["room"], entry.get("title", ""))
+
+    def _read_live_cache() -> dict:
+        try:
+            if LIVE_CACHE_FILE.exists():
+                return json.loads(LIVE_CACHE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        return {}
+
+    def _write_live_cache(data: dict) -> None:
+        LIVE_CACHE_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    @app.get("/api/live/cache")
+    def live_cache_list():
+        """获取缓存的直播链接。支持 ?sub_id= 或 ?room= 查询。"""
+        sub_id = request.args.get("sub_id", "").strip()
+        room = request.args.get("room", "").strip()
+        cache = _read_live_cache()
+        if sub_id:
+            entry = cache.get(sub_id)
+            if entry:
+                return jsonify({"ok": True, "entry": entry, "matched_by": "sub_id"})
+            # sub_id 未命中，尝试用教室名匹配
+            for v in cache.values():
+                if v.get("room_name", "") == room:
+                    return jsonify({"ok": True, "entry": v, "matched_by": "room_name"})
+            return jsonify({"ok": False, "error": "未找到"}), 404
+        if room:
+            for v in cache.values():
+                if v.get("room_name", "") == room:
+                    return jsonify({"ok": True, "entry": v, "matched_by": "room_name"})
+            return jsonify({"ok": False, "error": "未找到"}), 404
+        items = list(cache.values())
+        items.sort(key=_location_sort_key)
+        return jsonify({"ok": True, "list": items})
+
+    @app.post("/api/live/cache")
+    def live_cache_save():
+        """缓存/更新一个直播链接。相同 sub_id 会覆盖旧链接。"""
+        payload = request.get_json(silent=True) or {}
+        sub_id = str(payload.get("sub_id", "")).strip()
+        if not sub_id:
+            return jsonify({"ok": False, "error": "缺少 sub_id"}), 400
+
+        live_url = str(payload.get("live_url", "")).strip()
+        if not live_url:
+            return jsonify({"ok": False, "error": "缺少 live_url"}), 400
+
+        cache = _read_live_cache()
+        old = cache.get(sub_id, {})
+
+        # 验证新链接是否可用
+        new_works = False
+        try:
+            client = get_client()
+            import requests as _requests
+            test_resp = _requests.get(live_url, headers={
+                "Referer": "https://classroom.msa.buaa.edu.cn/",
+                "User-Agent": client.session.headers.get("User-Agent", "Mozilla/5.0"),
+            }, proxies=client.proxies, timeout=10)
+            new_works = test_resp.status_code == 200
+        except Exception:
+            pass
+
+        room_name = str(payload.get("room_name", old.get("room_name", ""))).strip()
+        loc = _parse_room(room_name)
+        entry = {
+            "course_id": str(payload.get("course_id", old.get("course_id", ""))).strip(),
+            "sub_id": sub_id,
+            "title": str(payload.get("title", old.get("title", ""))).strip(),
+            "lecturer_name": str(payload.get("lecturer_name", old.get("lecturer_name", ""))).strip(),
+            "room_name": room_name,
+            "campus": loc["campus"],
+            "building": loc["building"],
+            "room": loc["room"],
+            "sub_title": str(payload.get("sub_title", old.get("sub_title", ""))).strip(),
+            "live_url": live_url if new_works else old.get("live_url", live_url),
+            "cached_at": old.get("cached_at", ""),
+            "last_checked": __import__("datetime").datetime.now().isoformat(),
+            "url_working": new_works,
+            "search_time": str(payload.get("search_time", old.get("search_time", ""))).strip(),
+        }
+        if not entry["cached_at"]:
+            entry["cached_at"] = entry["last_checked"]
+
+        cache[sub_id] = entry
+        _write_live_cache(cache)
+        return jsonify({"ok": True, "saved": entry, "url_working": new_works})
+
+    @app.delete("/api/live/cache")
+    def live_cache_delete():
+        sub_id = request.args.get("sub_id", "").strip()
+        if not sub_id:
+            return jsonify({"ok": False, "error": "缺少 sub_id"}), 400
+        cache = _read_live_cache()
+        if sub_id in cache:
+            del cache[sub_id]
+            _write_live_cache(cache)
+            return jsonify({"ok": True, "msg": "已删除"})
+        return jsonify({"ok": False, "error": "未找到"}), 404
+
+    @app.get("/live-space/")
+    def live_space_page():
+        return send_from_directory(WEB_DIR, "live_space.html")
+
+    # ---- 直播录制 ----
+    import subprocess as _sp
+    _active_recordings: dict[str, dict] = {}  # sub_id → {proc, info}
+
+    def _read_record_meta() -> dict:
+        try:
+            if RECORD_META_FILE.exists():
+                return json.loads(RECORD_META_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        return {}
+
+    def _write_record_meta(data: dict) -> None:
+        RECORD_META_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    @app.post("/api/record/start")
+    def record_start():
+        payload = request.get_json(silent=True) or {}
+        sub_id = str(payload.get("sub_id", "")).strip()
+        m3u8_url = str(payload.get("url", "")).strip()
+        title = str(payload.get("title", "")).strip()
+        if not sub_id or not m3u8_url:
+            return jsonify({"ok": False, "error": "缺少 sub_id 或 url"}), 400
+
+        if sub_id in _active_recordings:
+            return jsonify({"ok": False, "error": "该课程已在录制中"}), 409
+
+        RECORD_DIR.mkdir(parents=True, exist_ok=True)
+        ts = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = RECORD_DIR / f"{sub_id}_{ts}.mp4"
+
+        # ffmpeg 录制 HLS 流
+        cmd = [
+            "ffmpeg", "-y",
+            "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "-headers", f"Referer: https://classroom.msa.buaa.edu.cn/\r\nOrigin: https://classroom.msa.buaa.edu.cn",
+            "-i", m3u8_url,
+            "-c", "copy",
+            "-bsf:a", "aac_adtstoasc",
+            str(output_path),
+        ]
+        try:
+            proc = _sp.Popen(cmd, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+        except FileNotFoundError:
+            return jsonify({"ok": False, "error": "未安装 ffmpeg，请先安装"}), 500
+
+        info = {
+            "sub_id": sub_id,
+            "title": title,
+            "url": m3u8_url,
+            "output": str(output_path),
+            "started_at": __import__("datetime").datetime.now().isoformat(),
+            "status": "recording",
+        }
+        _active_recordings[sub_id] = {"proc": proc, "info": info}
+
+        # 持久化
+        meta = _read_record_meta()
+        meta[sub_id] = info
+        _write_record_meta(meta)
+
+        return jsonify({"ok": True, "msg": "录制已开始", "info": info})
+
+    @app.post("/api/record/stop")
+    def record_stop():
+        sub_id = str(request.get_json(silent=True).get("sub_id", "")).strip() if request.get_json(silent=True) else request.args.get("sub_id", "").strip()
+        if not sub_id:
+            return jsonify({"ok": False, "error": "缺少 sub_id"}), 400
+
+        entry = _active_recordings.pop(sub_id, None)
+        if entry:
+            proc = entry["proc"]
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+            entry["info"]["status"] = "stopped"
+            entry["info"]["stopped_at"] = __import__("datetime").datetime.now().isoformat()
+
+        meta = _read_record_meta()
+        if sub_id in meta:
+            meta[sub_id]["status"] = "stopped"
+            meta[sub_id]["stopped_at"] = __import__("datetime").datetime.now().isoformat()
+            _write_record_meta(meta)
+
+        return jsonify({"ok": True, "msg": "录制已停止", "info": meta.get(sub_id, {})})
+
+    @app.get("/api/record/list")
+    def record_list():
+        meta = _read_record_meta()
+        # 合并活跃录制状态
+        for sub_id, entry in _active_recordings.items():
+            if sub_id in meta:
+                meta[sub_id]["status"] = "recording"
+        items = list(meta.values())
+        items.sort(key=lambda x: x.get("started_at", ""), reverse=True)
+        return jsonify({"ok": True, "list": items})
+
+    @app.delete("/api/record/delete")
+    def record_delete():
+        sub_id = request.args.get("sub_id", "").strip()
+        if not sub_id:
+            return jsonify({"ok": False, "error": "缺少 sub_id"}), 400
+        # 先停掉正在录制的
+        if sub_id in _active_recordings:
+            proc = _active_recordings[sub_id]["proc"]
+            proc.terminate()
+            try: proc.wait(timeout=5)
+            except: proc.kill()
+            del _active_recordings[sub_id]
+        meta = _read_record_meta()
+        entry = meta.pop(sub_id, None)
+        if entry:
+            # 删除录制的文件
+            output = entry.get("output", "")
+            if output:
+                try: Path(output).unlink(missing_ok=True)
+                except: pass
+            _write_record_meta(meta)
+            return jsonify({"ok": True, "msg": "已删除"})
+        return jsonify({"ok": False, "error": "未找到"}), 404
 
     @app.post("/api/shutdown")
     def shutdown():

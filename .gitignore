@@ -1,6 +1,9 @@
 # 登录凭证（包含学号和 token，绝对不能提交）
 assemble/web/cookies.json
 cookies.json
+live_cache.json
+recordings/
+recordings.json
 
 # Python
 __pycache__/

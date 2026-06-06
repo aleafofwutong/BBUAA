@@ -15,7 +15,7 @@ BBUAA 为你提供一个在寝室就能搜索、观看直播/回放、下载 PPT
 ### 课程搜索
 
 | 功能 | 说明 |
-|:---|:---:|
+|:---|:---|
 | 多维度筛选 | 课程名、教师、编号、学院、学期、日期、校区/教学楼/教室 |
 | 状态筛选 | **全部 / 🔴 直播中 / 📼 可回放 / ⏳ 回放生成中**，一键过滤 |
 | 默认当天 | 登录后自动显示当天课程，无需手动选日期 |
@@ -57,19 +57,6 @@ BBUAA 为你提供一个在寝室就能搜索、观看直播/回放、下载 PPT
 
 ## 快速开始
 
-### Windows
-
-```PowerShell
-git clone https://github.com/aleafofwutong/BBUAA.git
-cd BBUAA
-# conda create -n bbuaa python=3.10 -y
-# conda activate bbuaa
-python install -r requirements.txt
-python start.py
-```
-
-### Linux
-
 ```bash
 git clone https://github.com/aleafofwutong/BBUAA.git
 cd BBUAA
@@ -84,11 +71,7 @@ bash start_bbuaa.sh     # 启动服务
 - Python >= 3.10
 - 网络可访问 `classroom.msa.buaa.edu.cn`、`yjapi.msa.buaa.edu.cn`、`livepgc.msa.buaa.edu.cn` 等子域（可能需要代理）
 
-- windows端Edge浏览器建议使用代理
-
 ### 代理配置
-
-Linux端
 
 ```bash
 export BBUAA_PROXY=http://127.0.0.1:7897
@@ -112,7 +95,7 @@ export BBUAA_PASSWORD=你的密码
 
 ## 项目结构
 
-``` tree
+```
 BBUAA/
 ├── assemble/
 │   ├── sso_login.py       # CAS SSO 登录，cookie 持久化
@@ -170,7 +153,7 @@ API 的 `status_label` 不可靠，改用 `sub_status` 数值映射：`1→直�
 ## 技术栈
 
 | 层 | 技术 |
-|:---:|:---:|
+|:---|:---|
 | 前端 | Vanilla JS + hls.js + CSS3 |
 | 后端 | Python Flask + requests + Pillow + python-pptx |
 | 认证 | 北航 CAS SSO + JWT Bearer Token（从 `_token` cookie 提取） |
@@ -184,7 +167,7 @@ API 的 `status_label` 不可靠，改用 `sub_status` 数值映射：`1→直�
 - 本项目仅供学习交流使用，**严禁用于商业和非法用途**
 - 使用了部分逆向和爬虫技术，请勿滥用
 - 本网站不会收集任何个人信息，但请注意保管好自己的 cookie 和密码
-- 目前仅在Windows端的Chrome和edge浏览器以及 Linux 端 Chrome 浏览器测试，其中Edge浏览器建议走代理，其他浏览器可能存在兼容性问题
+- 目前仅在 Chrome 浏览器测试，其他浏览器可能存在兼容性问题
 - 如有疑问请在 [GitHub Issues](https://github.com/aleafofwutong/BBUAA/issues) 提交
 
 ---

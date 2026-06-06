@@ -171,25 +171,99 @@ class ClassroomClient:
     def search(self, filters: SearchFilters) -> dict[str, Any]:
         filters = _normalize_date_filter(filters)
         if filters.create_at or filters.search_time:
-            # 先走 live；如果当天接口未命中，再退回 searchlist 做兜底
+            # 合并三个 API 的结果：live + yjapi + searchlist
             live_result = self._search_via_live(filters)
-            if live_result["total"] > 0:
-                return live_result
-
+            yjapi_result = self._search_via_yjapi(filters)
             searchlist_result = self._search_via_searchlist(filters)
-            if searchlist_result["total"] > 0:
-                return searchlist_result
+
+            seen: set[str] = set()
+            merged: list[dict[str, Any]] = []
+            for item in live_result.get("list", []):
+                key = f"{item.get('course_id','')}|{item.get('sub_id','')}"
+                if key not in seen:
+                    seen.add(key)
+                    merged.append(item)
+            for item in yjapi_result.get("list", []):
+                key = f"{item.get('course_id','')}|{item.get('sub_id','')}"
+                if key not in seen:
+                    seen.add(key)
+                    merged.append(item)
+            for item in searchlist_result.get("list", []):
+                key = f"{item.get('course_id','')}|{item.get('sub_id','')}"
+                if key not in seen:
+                    seen.add(key)
+                    merged.append(item)
 
             return {
-                "total": 0,
-                "list": [],
-                "source": "live",
-                "msg": "该日期暂无匹配课程",
+                "total": len(merged),
+                "list": merged,
+                "source": "merged",
+                "msg": f"live={live_result.get('total',0)}, yjapi={yjapi_result.get('total',0)}, searchlist={searchlist_result.get('total',0)}",
             }
 
         if _should_use_searchlist(filters):
             return self._search_via_searchlist(filters)
         return self._search_via_live(filters)
+
+    def _search_via_yjapi(self, filters: SearchFilters) -> dict[str, Any]:
+        """通过 yjapi 域名搜索（包含 show_all/show_delete，覆盖面更广）。"""
+        import sys as _sys
+        time_value = filters.search_time or filters.create_at
+        day = _format_live_day(time_value) if time_value else ""
+        if not day:
+            return {"total": 0, "list": [], "source": "yjapi"}
+
+        jwt = _extract_jwt(self.session)
+        headers = self._json_headers()
+        if jwt:
+            headers["Authorization"] = f"Bearer {jwt}"
+        else:
+            print("[YJAPI] WARNING: no JWT extracted!", file=_sys.stderr)
+
+        courses: list[dict[str, Any]] = []
+        for page in range(1, 8):
+            params: dict[str, Any] = {
+                "all": "1",
+                "show_all": "1",
+                "show_delete": "2",
+                "with_sub_data": "1",
+                "with_room_data": "1",
+                "search_time": day,
+                "per_page": 100,
+                "page": page,
+            }
+            if filters.title:
+                params["like_title"] = "1"
+            try:
+                resp = self.session.get(
+                    LIVE_COURSE_DETAIL_URL,
+                    params=params,
+                    headers=headers,
+                    proxies=self.proxies,
+                    timeout=30,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            except Exception as exc:
+                print(f"[YJAPI] page {page} request error: {exc}", file=_sys.stderr)
+                break
+            if data.get("code") != 0:
+                print(f"[YJAPI] page {page} code={data.get('code')} msg={data.get('msg','')}", file=_sys.stderr)
+                break
+            batch = _flatten_live_courses(data)
+            print(f"[YJAPI] page {page}: got {len(batch)} courses", file=_sys.stderr)
+            if not batch:
+                break
+            courses.extend(batch)
+
+        print(f"[YJAPI] total before local filter: {len(courses)}", file=_sys.stderr)
+        # yjapi 已经用 search_time 过滤日期，只做标题等文本筛选，不再重复按日期过滤
+        courses = _apply_local_filters_no_date(courses, filters)
+        print(f"[YJAPI] total after local filter: {len(courses)}", file=_sys.stderr)
+        total = len(courses)
+        start = (filters.page - 1) * filters.per_page
+        courses = courses[start : start + filters.per_page]
+        return {"total": total, "list": courses, "source": "yjapi"}
 
     def _search_via_searchlist(self, filters: SearchFilters) -> dict[str, Any]:
         filters = _normalize_date_filter(filters)
@@ -224,10 +298,18 @@ class ClassroomClient:
         if data.get("code") != 0:
             return {"total": 0, "list": [], "source": "searchlist", "msg": data.get("msg", "")}
 
-        total_block = data.get("total") or {}
-        items = total_block.get("list") or []
+        total_block = data.get("total")
+        if isinstance(total_block, dict):
+            items = total_block.get("list") or []
+            total = int(total_block.get("total") or 0)
+        elif isinstance(total_block, (int, float, str)):
+            items = data.get("list") or []
+            total = int(total_block)
+        else:
+            items = data.get("list") or []
+            total = len(items)
         return {
-            "total": int(total_block.get("total") or 0),
+            "total": total,
             "list": [_normalize_search_item(item) for item in items],
             "source": "searchlist",
             "msg": data.get("msg", ""),
@@ -236,14 +318,21 @@ class ClassroomClient:
     def _search_via_live(self, filters: SearchFilters) -> dict[str, Any]:
         time_value = filters.search_time or filters.create_at
         needs_local = _needs_local_filter(filters) or bool(time_value)
+        # 带上 JWT Bearer token（官网搜索也带这个头）
+        jwt = _extract_jwt(self.session)
+        live_headers = self._json_headers()
+        if jwt:
+            live_headers["Authorization"] = f"Bearer {jwt}"
         base_params: dict[str, Any] = {
             "tenant": self.tenant_id,
             "need_time_quantum": 1,
             "unique_course": 1,
             "with_sub_duration": 1,
             "with_sub_data": 1,
+            "sub_live_status": "",
+            "sub_public": "",
             "course_student_type": "",
-            "like_title": 1 if filters.title else "",
+            "like_title": filters.title or "",  # 传实际标题文本，由 API 端过滤
             "has_frame": 1,
             "kkxy_code": filters.kkxycode or "",
         }
@@ -262,13 +351,15 @@ class ClassroomClient:
             api_total = 0
             msg = ""
             # 单日时直接按页拉取；多日/复杂条件时可以本地兜底过滤
-            for page in range(1, 8):
+            for page in range(1, 16):
                 params = {
                     **base_params,
                     "page": page,
                     "per_page": 100,
                 }
-                data = self._get(LIVE_COURSE_URL, params=params)
+                resp = self.session.get(LIVE_COURSE_URL, params=params, headers=live_headers, proxies=self.proxies, timeout=30)
+                resp.raise_for_status()
+                data = resp.json()
                 msg = data.get("msg", "")
                 if data.get("code") != 0:
                     break
@@ -398,10 +489,12 @@ class ClassroomClient:
             "per_page": 100,
         }
 
-        for page in range(1, 8):
+        for page in range(1, 16):
             params["page"] = page
             try:
-                data = self._get(LIVE_COURSE_URL, params=params)
+                resp = self.session.get(LIVE_COURSE_URL, params=params, headers=live_headers, proxies=self.proxies, timeout=30)
+                resp.raise_for_status()
+                data = resp.json()
             except Exception:
                 break
             if data.get("code") != 0:
@@ -424,6 +517,10 @@ class ClassroomClient:
         resource_guid: str,
     ) -> list[dict[str, Any]]:
         """获取课程 PPT 时间轴（每页图片 URL + 时间戳）。"""
+        jwt = _extract_jwt(self.session)
+        ppt_headers = self._json_headers()
+        if jwt:
+            ppt_headers["Authorization"] = f"Bearer {jwt}"
         all_items: list[dict[str, Any]] = []
         for page in range(1, 10):
             params = {
@@ -433,7 +530,9 @@ class ClassroomClient:
                 "per_page": "100",
                 "resource_guid": resource_guid,
             }
-            data = self._get(PPT_TIMELINE_URL, params=params)
+            resp = self.session.get(PPT_TIMELINE_URL, params=params, headers=ppt_headers, proxies=self.proxies, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
             if data.get("code") != 0:
                 break
             batch = data.get("list") or []
@@ -900,6 +999,13 @@ def _has_text_search(filters: SearchFilters) -> bool:
 def _flatten_live_courses(data: dict[str, Any]) -> list[dict[str, Any]]:
     courses: list[dict[str, Any]] = []
     for slot in data.get("list") or []:
+        if not isinstance(slot, dict):
+            continue
+        # 扁平结构：slot 本身就是课程（有 course_id/sub_id，不是时间段的 id）
+        if "course_id" in slot or "sub_id" in slot:
+            courses.append(_normalize_live_item(slot, "", ""))
+            continue
+        # 分组结构：slot 包含 name + list
         slot_label = slot.get("name") or ""
         slot_time = f"{slot.get('class_begin_time', '')}-{slot.get('class_end_time', '')}"
         for item in slot.get("list") or []:
@@ -1018,6 +1124,28 @@ def _needs_local_filter(filters: SearchFilters) -> bool:
         or filters.search_time
         or (filters.realname and _has_location(filters))
     )
+
+
+def _apply_local_filters_no_date(
+    courses: list[dict[str, Any]], filters: SearchFilters
+) -> list[dict[str, Any]]:
+    """同 _apply_local_filters，但不按日期过滤（API 已过滤）。"""
+    result = courses
+    if filters.title:
+        result = [c for c in result if filters.title in c.get("title", "")]
+    if filters.course_code:
+        result = [c for c in result if filters.course_code in c.get("course_code", "")]
+    if filters.kkxycode:
+        result = [c for c in result
+                  if filters.kkxycode in str(c.get("kkxy_name", ""))
+                  or filters.kkxycode in str(c.get("kkxy_code", ""))]
+    if filters.term:
+        result = [c for c in result
+                  if str(filters.term) in str(c.get("term", ""))
+                  or str(filters.term) in str(c.get("term_name", ""))]
+    if filters.realname:
+        result = [c for c in result if filters.realname in str(c.get("lecturer_name", ""))]
+    return result
 
 
 def _apply_local_filters(

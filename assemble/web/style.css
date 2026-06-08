@@ -322,19 +322,6 @@ tbody tr:hover {
   text-decoration: none;
 }
 
-.cache-btn {
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.8rem;
-  padding: 0.1rem 0.3rem;
-  margin-left: 0.2rem;
-  transition: all 0.15s;
-}
-.cache-btn:hover { background: #243247; border-color: var(--accent); }
-.cache-btn.cached { background: var(--accent); border-color: var(--accent); }
-
 .empty {
   text-align: center;
   color: var(--muted);

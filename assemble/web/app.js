@@ -26,9 +26,7 @@ const els = {
   nextPage: document.getElementById("nextPage"),
   shutdownBtn: document.getElementById("shutdownBtn"),
   logoutBtn: document.getElementById("logoutBtn"),
-  liveSpaceLink: document.getElementById("liveSpaceLink"),
   filterToggle: document.getElementById("filterToggle"),
-  cacheAllBtn: document.getElementById("cacheAllBtn"),
   collegeSelect: document.getElementById("collegeSelect"),
   termSelect: document.getElementById("termSelect"),
   campusSelect: document.getElementById("campusSelect"),
@@ -95,7 +93,6 @@ function showApp(on) {
   els.authView.classList.toggle("hidden", on);
   els.appView.classList.toggle("hidden", !on);
   if (els.logoutBtn) els.logoutBtn.style.display = on ? "" : "none";
-  if (els.liveSpaceLink) els.liveSpaceLink.style.display = on ? "" : "none";
 }
 
 function selectedProxyConfig() {
@@ -205,11 +202,6 @@ function updateFilterButtons() {
   els.filterToggle.querySelectorAll(".toggle-btn").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.filter === state.filterMode);
   });
-  // 一键缓存按钮在"直播中"和"回放生成中"时显示
-  if (els.cacheAllBtn) {
-    els.cacheAllBtn.style.display = (state.filterMode === 'live' || state.filterMode === 'generating') ? '' : 'none';
-    if (state.filterMode === 'generating') els.cacheAllBtn.textContent = '⬇ 一键缓存直播链接';
-  }
 }
 
 function renderCourses(list) {
@@ -244,62 +236,16 @@ function renderCourses(list) {
         <td>${escapeHtml(time || "-")}</td>
         <td>${escapeHtml(c.room_name || "-")}</td>
         <td title="${escapeAttr(c._raw_status || '')}">${escapeHtml(c.status_label || "-")}</td>
-        <td>
-          <a href="${escapeAttr(playerUrl)}" class="play-link" title="打开播放器">▶</a>
-          ${c.status_label === '直播中' ? `<button class="cache-btn" data-course="${escapeAttr(c.course_id||'')}" data-sub="${escapeAttr(c.sub_id||'')}" data-title="${escapeAttr(c.title||'')}" data-teacher="${escapeAttr(c.lecturer_name||'')}" data-room="${escapeAttr(c.room_name||'')}" data-stitle="${escapeAttr(c.sub_title||'')}" data-stime="${escapeAttr((document.querySelector('input[name=create_at]')?.value||''))}" title="缓存直播链接">⬇</button>` : ''}
-        </td>
+        <td><a href="${escapeAttr(playerUrl)}" class="play-link" title="打开播放器">▶</a></td>
       </tr>`;
     })
     .join("");
-
-  // 直播缓存按钮
-  els.courseBody.querySelectorAll('.cache-btn').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      e.preventDefault();
-      const origText = btn.textContent;
-      btn.textContent = '⏳';
-      btn.disabled = true;
-      try {
-        const courseId = btn.dataset.course;
-        const subId = btn.dataset.sub;
-        // 先获取课程详情拿到直播流 URL
-        const detailResp = await api(`/api/courses/detail?course_id=${courseId}&sub_id=${subId}&search_time=${btn.dataset.stime || ''}`);
-        const liveUrl = detailResp.detail?.sources?.live?.url || detailResp.detail?.trans_socket_url || '';
-        if (!liveUrl) throw new Error('该课程无直播流地址');
-
-        const resp = await fetch('/api/live/cache', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            course_id: courseId,
-            sub_id: subId,
-            title: btn.dataset.title,
-            lecturer_name: btn.dataset.teacher,
-            room_name: btn.dataset.room,
-            sub_title: btn.dataset.stitle,
-            live_url: liveUrl,
-            search_time: btn.dataset.stime,
-          }),
-        });
-        const data = await resp.json();
-        if (!resp.ok || !data.ok) throw new Error(data.error || '缓存失败');
-        btn.textContent = data.url_working ? '✅' : '⚠️';
-        btn.classList.add('cached');
-        setTimeout(() => { btn.textContent = origText; btn.classList.remove('cached'); }, 2000);
-      } catch (err) {
-        btn.textContent = '❌';
-        setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 1500);
-        console.error('缓存失败:', err);
-      }
-    });
-  });
 
   // 整行点击跳转播放器
   els.courseBody.querySelectorAll('.course-row').forEach(row => {
     row.addEventListener('click', (e) => {
       // 如果点的是播放链接或缓存按钮，让它们自己处理
-      if (e.target.closest('a') || e.target.closest('button')) return;
+      if (e.target.closest('a')) return;
       const href = row.dataset.href;
       if (href) window.open(href, '_blank');
     });
@@ -478,43 +424,6 @@ if (dateInput) {
   dateInput.addEventListener("change", () => {
     state.page = 1;
     runSearch();
-  });
-}
-
-// ---- 一键缓存全部直播 ----
-if (els.cacheAllBtn) {
-  els.cacheAllBtn.addEventListener('click', async () => {
-    const targetLabel = state.filterMode === 'generating' ? '回放生成中' : '直播中';
-    const coursesToCache = state.allCourses.filter(c => c.status_label === targetLabel);
-    if (!coursesToCache.length) return;
-    const origText = els.cacheAllBtn.textContent;
-    let done = 0, fail = 0;
-    els.cacheAllBtn.disabled = true;
-    for (const c of coursesToCache) {
-      els.cacheAllBtn.textContent = `⬇ 缓存中 ${done+1}/${coursesToCache.length}`;
-      try {
-        const detailResp = await api(`/api/courses/detail?course_id=${c.course_id}&sub_id=${c.sub_id}&search_time=${document.querySelector('input[name=create_at]')?.value || ''}`);
-        const liveUrl = detailResp.detail?.sources?.live?.url || detailResp.detail?.trans_socket_url || '';
-        if (!liveUrl) { fail++; continue; }
-        const resp = await fetch('/api/live/cache', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            course_id: c.course_id, sub_id: c.sub_id,
-            title: c.title, lecturer_name: c.lecturer_name,
-            room_name: c.room_name, sub_title: c.sub_title,
-            live_url: liveUrl,
-            search_time: document.querySelector('input[name=create_at]')?.value || '',
-          }),
-        });
-        const data = await resp.json();
-        if (data.ok) done++; else fail++;
-      } catch (err) { fail++; }
-    }
-    els.cacheAllBtn.textContent = origText;
-    els.cacheAllBtn.disabled = false;
-    setStatus(`缓存完成: ${done} 成功, ${fail} 失败`, fail === 0);
-    setTimeout(() => setStatus('已登录', true), 3000);
   });
 }
 

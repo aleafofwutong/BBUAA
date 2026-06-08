@@ -12,7 +12,7 @@ from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory
 
 from assemble.courses import ClassroomClient, SearchFilters
-from assemble.sso_login import COOKIE_FILE, is_logged_in, load_cookies, login as sso_login, save_cookies
+from assemble.sso_login import COOKIE_FILE, _proxy_from_env, is_logged_in, load_cookies, login as sso_login, save_cookies
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
 LIVE_CACHE_FILE = Path(__file__).resolve().parent / "live_cache.json"
@@ -22,8 +22,34 @@ RECORD_META_FILE = Path(__file__).resolve().parent / "recordings.json"
 
 def create_app(cookie_path: Path | None = None) -> Flask:
     app = Flask(__name__, static_folder=str(WEB_DIR), static_url_path="")
-    client_holder: dict[str, ClassroomClient | None] = {"client": None}
+    client_holder: dict[str, ClassroomClient | None] = {"client": None, "proxies": _proxy_from_env()}
     cookie_file = cookie_path or COOKIE_FILE
+
+    def parse_proxy_payload(payload: dict | None = None) -> dict[str, str] | None:
+        payload = payload or {}
+        mode = str(
+            payload.get("proxy_mode") or payload.get("proxyMode")
+            or request.args.get("proxy_mode", "") or request.args.get("proxyMode", "")
+            or "default"
+        ).strip().lower()
+        proxy_url = str(
+            payload.get("proxy_url") or payload.get("proxyUrl")
+            or request.args.get("proxy_url", "") or request.args.get("proxyUrl", "")
+            or ""
+        ).strip()
+        if mode in {"direct", "none", "off", "0"}:
+            return {}
+        if mode in {"proxy", "custom"}:
+            if not proxy_url:
+                raise ValueError("代理地址不能为空")
+            return {"http": proxy_url, "https": proxy_url}
+        return _proxy_from_env()
+
+    def set_proxy_payload(payload: dict | None = None) -> dict[str, str] | None:
+        proxies = parse_proxy_payload(payload)
+        client_holder["proxies"] = proxies
+        client_holder["client"] = None
+        return proxies
 
     def get_client() -> ClassroomClient:
         if client_holder["client"] is None:
@@ -33,7 +59,9 @@ def create_app(cookie_path: Path | None = None) -> Flask:
                     f"未检测到有效登录 cookie，请先运行: python -m assemble.sso_login "
                     f"(cookie 文件: {cookie_file})"
                 )
-            client_holder["client"] = ClassroomClient.from_cookies(cookie_file)
+            client = ClassroomClient.from_cookies(cookie_file)
+            client.proxies = client_holder["proxies"]
+            client_holder["client"] = client
         return client_holder["client"]
 
     @app.get("/")
@@ -57,6 +85,12 @@ def create_app(cookie_path: Path | None = None) -> Flask:
     @app.get("/api/auth/status")
     def auth_status():
         try:
+            # 先根据请求参数设置代理
+            query_payload = {
+                "proxy_mode": request.args.get("proxy_mode", ""),
+                "proxy_url": request.args.get("proxy_url", ""),
+            }
+            set_proxy_payload(query_payload)
             session = load_cookies(cookie_file)
             if not is_logged_in(session):
                 return jsonify({"ok": True, "logged_in": False, "cookie_file": str(cookie_file)})
@@ -95,7 +129,8 @@ def create_app(cookie_path: Path | None = None) -> Flask:
             return jsonify({"ok": False, "error": "用户名和密码不能为空"}), 400
 
         try:
-            session = sso_login(username, password)
+            proxies = set_proxy_payload(payload)
+            session = sso_login(username, password, proxies=proxies)
             save_cookies(session, cookie_file)
             client_holder["client"] = None
             client = get_client()

@@ -40,6 +40,24 @@
           密码
           <input type="password" name="password" placeholder="密码" autocomplete="current-password" />
         </label>
+        <fieldset class="proxy-options">
+          <legend>网络连接</legend>
+          <label class="proxy-choice">
+            <input type="radio" name="proxy_mode" value="direct" checked />
+            <span>直连</span>
+          </label>
+          <label class="proxy-choice">
+            <input type="radio" name="proxy_mode" value="proxy" />
+            <span>走代理</span>
+          </label>
+          <input
+            type="text"
+            name="proxy_url"
+            value="http://127.0.0.1:7897"
+            placeholder="http://127.0.0.1:7897"
+            autocomplete="off"
+          />
+        </fieldset>
         <div class="actions">
           <button type="submit" class="primary">登录并进入</button>
           <button type="button" id="reuseCookieBtn" class="ghost">使用上次 cookie</button>

@@ -30,7 +30,7 @@ BBUAA 为你提供一个在寝室就能搜索、观看直播/回放、下载 PPT
 | 视频回放 | MP4 播放，支持进度条拖拽、倍速（0.5× ~ 2×）、全屏 |
 | 直播流 | HLS (m3u8) 直播，通过代理解决跨域和 Origin 校验 |
 | PPT 同步 | 视频播放时 PPT 幻灯片自动跟随当前时间，也可手动翻页 |
-| PPT 下载 | 一键导出为 `.pptx` 文件（16:9 宽屏），可离线编辑 |
+| PPT 下载 | 一键导出为 `.pptx` 文件（16:9 宽屏），可选过滤相邻且几乎相同的截图页 |
 
 ### 播放器快捷键
 
@@ -100,6 +100,7 @@ BBUAA/
 ├── assemble/
 │   ├── sso_login.py       # CAS SSO 登录，cookie 持久化
 │   ├── courses.py         # 课程搜索、PPT 时间轴、视频地址解析、状态映射
+│   ├── ppt_filter.py      # 相邻截图页相似度检测与过滤
 │   ├── server.py          # Flask 服务：API 路由 + 视频/图片代理 + m3u8 改写
 │   └── web/
 │       ├── index.html     # 课程搜索页面（含状态筛选切换栏）
@@ -126,7 +127,7 @@ BBUAA/
 | `GET /api/courses/search` | 课程搜索（支持 `status_filter=live\|playback\|generating`） |
 | `GET /api/courses/detail` | 课程详情（返回 `sources.live` / `sources.replay` 分开的视频地址） |
 | `GET /api/courses/ppt` | PPT 时间轴（支持多 `resource_guid` 逐个尝试） |
-| `GET /api/courses/ppt/download` | PPT 导出 .pptx（PIL 校验 + 并行下载 + python-pptx 生成） |
+| `GET /api/courses/ppt/download` | PPT 导出 .pptx（`filter_similar=1` 默认过滤相似页） |
 | `GET /player/` | 播放器页面 |
 | `GET /api/proxy/video` | 视频流代理（注入 Cookie + Origin 伪装 + m3u8 分片 URL 改写） |
 | `GET /api/proxy/image` | 图片代理（注入 Cookie 解决跨域） |

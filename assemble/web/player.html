@@ -360,6 +360,16 @@
       border-color: var(--border);
       color: var(--muted);
     }
+    .ppt-filter-option {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      color: var(--muted);
+      font-size: 0.75rem;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+    .ppt-filter-option input { accent-color: var(--accent); }
 
     /* ---- PPT timeline strip ---- */
     .ppt-strip {
@@ -489,7 +499,11 @@
         <span class="ppt-nav-info" id="pptInfo">- / -</span>
         <button class="ppt-nav-btn" id="pptNext" disabled title="下一页 (→)">▶</button>
         <button class="ppt-auto-btn" id="pptAuto" title="自动跟随视频">自动</button>
-        <button class="ppt-nav-btn" id="pptDownload" title="下载全部 PPT (ZIP)" style="margin-left:auto;">⬇ 下载PPT</button>
+        <label class="ppt-filter-option" title="下载时移除相邻且几乎相同的截图页" style="margin-left:auto;">
+          <input type="checkbox" id="pptFilterSimilar" checked />
+          过滤相似页
+        </label>
+        <button class="ppt-nav-btn" id="pptDownload" title="下载 PPTX">⬇ 下载PPT</button>
       </div>
     </div>
   </div>
@@ -1208,6 +1222,8 @@
         const aGuids = savedPptGuids.slice(1).join(',');
         let dl = `/api/courses/ppt/download?course_id=${COURSE_ID}&sub_id=${SUB_ID}&resource_guid=${encodeURIComponent(pGuid)}`;
         if (aGuids) dl += `&alt_guids=${encodeURIComponent(aGuids)}`;
+        const filterSimilar = $('#pptFilterSimilar').checked;
+        dl += `&filter_similar=${filterSimilar ? '1' : '0'}`;
 
         const resp = await fetch(dl);
         if (!resp.ok) {
@@ -1215,14 +1231,17 @@
           throw new Error(err.error || `HTTP ${resp.status}`);
         }
         const blob = await resp.blob();
+        const slideCount = Number(resp.headers.get('X-PPT-Slides')) || pptSlides.length;
+        const removedCount = Number(resp.headers.get('X-PPT-Removed-Slides')) || 0;
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = `ppt_${COURSE_ID}_${SUB_ID}.pptx`;
+        a.download = `ppt_${COURSE_ID}_${SUB_ID}${filterSimilar ? '_filtered' : ''}.pptx`;
         document.body.appendChild(a);
         a.click();
         a.remove();
         URL.revokeObjectURL(a.href);
-        toast(`已下载 ${pptSlides.length} 页 PPT`);
+        const filterHint = removedCount > 0 ? `，已过滤 ${removedCount} 页相似内容` : '';
+        toast(`已下载 ${slideCount} 页 PPT${filterHint}`);
       } catch (err) {
         toast('下载失败: ' + err.message);
       }

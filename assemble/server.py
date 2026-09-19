@@ -12,6 +12,7 @@ from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory
 
 from assemble.courses import ClassroomClient, SearchFilters
+from assemble.ppt_filter import filter_adjacent_images
 from assemble.sso_login import COOKIE_FILE, _proxy_from_env, is_logged_in, load_cookies, login as sso_login, save_cookies
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -331,10 +332,16 @@ def create_app(cookie_path: Path | None = None) -> Flask:
             sub_id = request.args.get("sub_id", "").strip()
             resource_guid = request.args.get("resource_guid", "").strip()
             alt_guids = [g.strip() for g in request.args.get("alt_guids", "").split(",") if g.strip()]
+            filter_similar = request.args.get("filter_similar", "1").strip().lower() not in {
+                "0", "false", "no", "off",
+            }
             if not course_id or not sub_id:
                 return jsonify({"ok": False, "error": "需要 course_id, sub_id"}), 400
 
-            _log(f"开始下载 PPT: course={course_id} sub={sub_id} guid={resource_guid} alt={alt_guids}")
+            _log(
+                f"开始下载 PPT: course={course_id} sub={sub_id} "
+                f"guid={resource_guid} alt={alt_guids} filter_similar={filter_similar}"
+            )
 
             client = get_client()
             guids_to_try = [resource_guid] + alt_guids if resource_guid else alt_guids
@@ -455,6 +462,16 @@ def create_app(cookie_path: Path | None = None) -> Flask:
             if not valid:
                 return jsonify({"ok": False, "error": "所有图片校验失败"}), 502
 
+            original_count = len(valid)
+            removed_pages: list[int] = []
+            if filter_similar:
+                valid, removed_indexes = filter_adjacent_images(valid)
+                removed_pages = [index + 1 for index in removed_indexes]
+                _log(
+                    f"相似页过滤: 原始={original_count}, 保留={len(valid)}, "
+                    f"移除={len(removed_pages)}, 原页码={removed_pages}"
+                )
+
             # ---- 生成 .pptx ----
             from pptx import Presentation as _Presentation
             from pptx.util import Inches as _Inches
@@ -478,12 +495,17 @@ def create_app(cookie_path: Path | None = None) -> Flask:
             _log(f"PPTX 生成成功: {len(valid)} 页, {buf.getbuffer().nbytes} bytes")
 
             from flask import send_file as _send_file
-            return _send_file(
+            suffix = "_filtered" if filter_similar else ""
+            response = _send_file(
                 buf,
                 mimetype="application/vnd.openxmlformats-officedocument.presentationml.presentation",
                 as_attachment=True,
-                download_name=f"ppt_{course_id}_{sub_id}.pptx",
+                download_name=f"ppt_{course_id}_{sub_id}{suffix}.pptx",
             )
+            response.headers["X-PPT-Original-Slides"] = str(original_count)
+            response.headers["X-PPT-Slides"] = str(len(valid))
+            response.headers["X-PPT-Removed-Slides"] = str(len(removed_pages))
+            return response
         except Exception as exc:
             _log(f"未处理异常: {exc}")
             _log(_traceback.format_exc())

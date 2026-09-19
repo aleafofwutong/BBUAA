@@ -130,7 +130,8 @@
           <button type="submit" class="primary">搜索</button>
           <button type="button" id="resetBtn" class="ghost">重置</button>
           <button type="button" id="loadAllBtn" class="ghost">今日直播课</button>
-            <button type="button" id="shutdownBtn" class="danger">退出并释放端口</button>
+          <button type="button" id="favoritesBtn" class="ghost" title="查看本学期收藏课程的所有课次">★ 我的收藏</button>
+          <button type="button" id="shutdownBtn" class="danger">退出并释放端口</button>
         </div>
       </form>
     </section>
@@ -152,6 +153,7 @@
         <table>
           <thead>
             <tr>
+              <th class="favorite-column">收藏</th>
               <th>课程名称</th>
               <th>课程编号</th>
               <th>教师</th>
@@ -163,7 +165,7 @@
             </tr>
           </thead>
           <tbody id="courseBody">
-            <tr><td colspan="8" class="empty">请输入条件后搜索，或点击「今日直播课」</td></tr>
+            <tr><td colspan="9" class="empty">请输入条件后搜索，或点击「今日直播课」</td></tr>
           </tbody>
         </table>
       </div>

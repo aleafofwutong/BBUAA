@@ -205,6 +205,12 @@ button.ghost:hover:not(:disabled) {
   background: #243247;
 }
 
+button.ghost.active {
+  border-color: #d7a62a;
+  color: #ffd76a;
+  background: rgba(215, 166, 42, 0.12);
+}
+
 button.danger {
   background: #d9534f;
   color: #fff;
@@ -311,6 +317,29 @@ tbody tr:hover {
   cursor: pointer;
 }
 
+.favorite-column {
+  width: 3.5rem;
+  text-align: center;
+}
+
+.favorite-btn {
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.15rem;
+  line-height: 1;
+}
+
+.favorite-btn:hover,
+.favorite-btn.active {
+  border-color: #8b6b22;
+  background: rgba(215, 166, 42, 0.12);
+  color: #ffd76a;
+}
+
 .play-link {
   color: var(--accent);
   text-decoration: none;
@@ -326,6 +355,21 @@ tbody tr:hover {
   text-align: center;
   color: var(--muted);
   padding: 2rem !important;
+}
+
+.toast {
+  position: fixed;
+  top: 1rem;
+  left: 50%;
+  z-index: 1000;
+  max-width: min(90vw, 36rem);
+  transform: translateX(-50%);
+  padding: 0.65rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #111a27;
+  color: var(--text);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
 
 .pager {

@@ -1,3 +1,14 @@
+const FAVORITES_STORAGE_KEY = "bbuaa_favorite_courses_v1";
+
+function loadFavorites() {
+  try {
+    const value = JSON.parse(localStorage.getItem(FAVORITES_STORAGE_KEY) || "[]");
+    return Array.isArray(value) ? value.filter((item) => item && typeof item === "object") : [];
+  } catch (_err) {
+    return [];
+  }
+}
+
 const state = {
   page: 1,
   perPage: 20,
@@ -6,6 +17,9 @@ const state = {
   loggedIn: false,
   filterMode: "all",
   allCourses: [],
+  favorites: loadFavorites(),
+  currentTermId: "",
+  resultMode: "search",
 };
 
 const els = {
@@ -25,6 +39,7 @@ const els = {
   prevPage: document.getElementById("prevPage"),
   nextPage: document.getElementById("nextPage"),
   shutdownBtn: document.getElementById("shutdownBtn"),
+  favoritesBtn: document.getElementById("favoritesBtn"),
   logoutBtn: document.getElementById("logoutBtn"),
   filterToggle: document.getElementById("filterToggle"),
   collegeSelect: document.getElementById("collegeSelect"),
@@ -73,6 +88,14 @@ function showError(msg) {
   }
   els.errorBox.textContent = msg;
   els.errorBox.classList.remove("hidden");
+}
+
+function toast(message) {
+  const item = document.createElement("div");
+  item.className = "toast";
+  item.textContent = message;
+  document.body.appendChild(item);
+  window.setTimeout(() => item.remove(), 3000);
 }
 
 function showAuthError(msg) {
@@ -137,6 +160,9 @@ async function loadMeta() {
   setStatus(`已登录 · ${status.user}`, true);
 
   fillSelect(els.termSelect, terms.list, "id", "term_name", "全部学期");
+  state.currentTermId = String(
+    terms.current_term_id || terms.list?.[0]?.id || ""
+  );
   fillSelect(
     els.collegeSelect,
     colleges.list,
@@ -204,18 +230,87 @@ function updateFilterButtons() {
   });
 }
 
+function cleanIdentity(value) {
+  return String(value || "").trim().toLocaleLowerCase();
+}
+
+function sameFavoriteCourse(course, favorite) {
+  const courseId = cleanIdentity(course.course_id);
+  const favoriteId = cleanIdentity(favorite.course_id);
+  if (courseId && favoriteId && courseId === favoriteId) return true;
+
+  const courseCode = cleanIdentity(course.course_code);
+  const favoriteCode = cleanIdentity(favorite.course_code);
+  if (courseCode && favoriteCode && courseCode === favoriteCode) return true;
+
+  const title = cleanIdentity(course.title);
+  const favoriteTitle = cleanIdentity(favorite.title);
+  if (!title || title !== favoriteTitle) return false;
+  const lecturer = cleanIdentity(course.lecturer_name);
+  const favoriteLecturer = cleanIdentity(favorite.lecturer_name);
+  return !favoriteLecturer || lecturer === favoriteLecturer;
+}
+
+function favoriteForCourse(course) {
+  return state.favorites.find((favorite) => sameFavoriteCourse(course, favorite));
+}
+
+function favoriteRecord(course) {
+  return {
+    course_id: String(course.course_id || ""),
+    course_code: String(course.course_code || ""),
+    title: String(course.title || ""),
+    lecturer_name: String(course.lecturer_name || ""),
+  };
+}
+
+function saveFavorites() {
+  try {
+    localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(state.favorites));
+    return true;
+  } catch (_err) {
+    showError("浏览器无法保存收藏，请检查本地存储设置。");
+    return false;
+  }
+}
+
+function toggleFavorite(course) {
+  const existing = favoriteForCourse(course);
+  if (existing) {
+    state.favorites = state.favorites.filter((favorite) => favorite !== existing);
+    saveFavorites();
+    toast(`已取消收藏「${course.title || "未命名课程"}」`);
+    if (state.resultMode === "favorites") {
+      state.allCourses = state.allCourses.filter(
+        (item) => !sameFavoriteCourse(item, existing)
+      );
+      state.total = state.allCourses.length;
+      const pages = Math.max(1, Math.ceil(state.total / state.perPage));
+      state.page = Math.min(state.page, pages);
+      renderFavoritePage();
+      return;
+    }
+  } else {
+    state.favorites.push(favoriteRecord(course));
+    saveFavorites();
+    toast(`已收藏「${course.title || "未命名课程"}」`);
+  }
+  renderCourses(state.allCourses);
+}
+
 function renderCourses(list) {
   const filtered = applyFilter(list);
   if (!filtered.length) {
-    const hint = state.filterMode === "live" ? "没有正在直播的课程" :
+    const hint = state.resultMode === "favorites" ? "本学期暂无已收藏课程的课次" :
+                 state.filterMode === "live" ? "没有正在直播的课程" :
                  state.filterMode === "playback" ? "没有可回放的课程" :
                  state.filterMode === "generating" ? "没有回放生成中的课程" : "没有匹配的课程";
-    els.courseBody.innerHTML = `<tr><td colspan="8" class="empty">${hint}</td></tr>`;
+    els.courseBody.innerHTML = `<tr><td colspan="9" class="empty">${hint}</td></tr>`;
     return;
   }
 
-  els.courseBody.innerHTML = list
-    .map((c) => {
+  els.courseBody.innerHTML = filtered
+    .map((c, index) => {
       const time = [c.time_slot, c.course_time, c.sub_title]
         .filter(Boolean)
         .join(" · ");
@@ -226,10 +321,17 @@ function renderCourses(list) {
           (document.querySelector('input[name="create_at"]')?.value || '')
         )}`,
       ].join('&');
+      const isFavorite = Boolean(favoriteForCourse(c));
       return `<tr class="course-row" data-href="${escapeAttr(playerUrl)}"
                   data-course-id="${escapeAttr(c.course_id || '')}"
                   data-sub-id="${escapeAttr(c.sub_id || '')}">
-        <td><strong>${escapeHtml(c.title)}</strong></td>
+        <td class="favorite-column">
+          <button type="button" class="favorite-btn${isFavorite ? ' active' : ''}"
+                  data-course-index="${index}" aria-pressed="${isFavorite}"
+                  title="${isFavorite ? '取消收藏' : '收藏课程'}"
+                  aria-label="${isFavorite ? '取消收藏' : '收藏课程'}">${isFavorite ? '★' : '☆'}</button>
+        </td>
+        <td><strong>${escapeHtml(c.title || "-")}</strong></td>
         <td>${escapeHtml(c.course_code || "-")}</td>
         <td>${escapeHtml(c.lecturer_name || "-")}</td>
         <td>${escapeHtml(c.kkxy_name || "-")}</td>
@@ -244,10 +346,15 @@ function renderCourses(list) {
   // 整行点击跳转播放器
   els.courseBody.querySelectorAll('.course-row').forEach(row => {
     row.addEventListener('click', (e) => {
-      // 如果点的是播放链接或缓存按钮，让它们自己处理
-      if (e.target.closest('a')) return;
+      if (e.target.closest('a, button')) return;
       const href = row.dataset.href;
       if (href) window.open(href, '_blank');
+    });
+  });
+  els.courseBody.querySelectorAll('.favorite-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      const course = filtered[Number(button.dataset.courseIndex)];
+      if (course) toggleFavorite(course);
     });
   });
 }
@@ -275,7 +382,17 @@ function updatePager() {
   els.nextPage.disabled = state.page >= pages;
 }
 
+function renderFavoritePage() {
+  const start = (state.page - 1) * state.perPage;
+  renderCourses(state.allCourses.slice(start, start + state.perPage));
+  const termLabel = els.termSelect.selectedOptions[0]?.textContent || "本学期";
+  els.resultMeta.textContent = `我的收藏 · ${termLabel} · 共 ${state.total} 条课次`;
+  updatePager();
+}
+
 async function runSearch() {
+  state.resultMode = "search";
+  els.favoritesBtn?.classList.remove("active");
   showError("");
   showLoading(true);
   try {
@@ -299,6 +416,54 @@ async function runSearch() {
   }
 }
 
+async function runFavoriteSearch() {
+  showError("");
+  if (!state.favorites.length) {
+    state.resultMode = "favorites";
+    state.page = 1;
+    state.total = 0;
+    state.allCourses = [];
+    els.favoritesBtn?.classList.add("active");
+    renderFavoritePage();
+    showError("还没有收藏课程，请先点击课程行左侧的星标。");
+    return;
+  }
+  if (!state.currentTermId) {
+    showError("无法确定当前学期，请刷新后重试。");
+    return;
+  }
+
+  showLoading(true);
+  els.favoritesBtn.disabled = true;
+  try {
+    els.form.reset();
+    els.termSelect.value = state.currentTermId;
+    state.filterMode = "all";
+    state.resultMode = "favorites";
+    state.page = 1;
+    updateFilterButtons();
+    els.favoritesBtn.classList.add("active");
+    const data = await apiPost("/api/courses/favorites/search", {
+      favorites: state.favorites,
+      term: state.currentTermId,
+    });
+    state.allCourses = data.list || [];
+    state.total = state.allCourses.length;
+    renderFavoritePage();
+    if (data.errors?.length) {
+      showError(`部分收藏查询失败：${data.errors.join("；")}`);
+    }
+  } catch (err) {
+    state.allCourses = [];
+    state.total = 0;
+    renderFavoritePage();
+    showError(err.message);
+  } finally {
+    showLoading(false);
+    els.favoritesBtn.disabled = false;
+  }
+}
+
 els.form.addEventListener("submit", (e) => {
   e.preventDefault();
   state.page = 1;
@@ -314,7 +479,9 @@ document.getElementById("resetBtn").addEventListener("click", () => {
   state.page = 1;
   state.total = 0;
   state.filterMode = "all";
+  state.resultMode = "search";
   state.allCourses = [];
+  els.favoritesBtn?.classList.remove("active");
   updateFilterButtons();
   renderCourses([]);
   els.resultMeta.textContent = "";
@@ -331,10 +498,15 @@ document.getElementById("loadAllBtn").addEventListener("click", () => {
   runSearch();
 });
 
+if (els.favoritesBtn) {
+  els.favoritesBtn.addEventListener("click", runFavoriteSearch);
+}
+
 els.prevPage.addEventListener("click", () => {
   if (state.page > 1) {
     state.page -= 1;
-    runSearch();
+    if (state.resultMode === "favorites") renderFavoritePage();
+    else runSearch();
   }
 });
 
@@ -342,7 +514,8 @@ els.nextPage.addEventListener("click", () => {
   const pages = Math.max(1, Math.ceil(state.total / state.perPage));
   if (state.page < pages) {
     state.page += 1;
-    runSearch();
+    if (state.resultMode === "favorites") renderFavoritePage();
+    else runSearch();
   }
 });
 

@@ -205,6 +205,56 @@ class ClassroomClient:
             return self._search_via_searchlist(filters)
         return self._search_via_live(filters)
 
+    def list_course_sessions(self, course_id: str) -> list[dict[str, Any]]:
+        """Return all available sessions for one course from the live-course API."""
+        course_id = str(course_id).strip()
+        if not course_id:
+            return []
+
+        headers = self._json_headers()
+        jwt = _extract_jwt(self.session)
+        if jwt:
+            headers["Authorization"] = f"Bearer {jwt}"
+
+        sessions: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for page in range(1, 11):
+            params: dict[str, Any] = {
+                "all": "1",
+                "show_all": "1",
+                "show_delete": "2",
+                "with_sub_data": "1",
+                "with_room_data": "1",
+                "course_id": course_id,
+                "page": page,
+                "per_page": 100,
+            }
+            response = self.session.get(
+                LIVE_COURSE_DETAIL_URL,
+                params=params,
+                headers=headers,
+                proxies=self.proxies,
+                timeout=30,
+            )
+            response.raise_for_status()
+            data = response.json()
+            if data.get("code") != 0:
+                break
+            batch = _flatten_live_courses(data)
+            if not batch:
+                break
+            for item in batch:
+                if str(item.get("course_id") or "") != course_id:
+                    continue
+                key = f"{item.get('course_id', '')}|{item.get('sub_id', '')}"
+                if key not in seen:
+                    seen.add(key)
+                    sessions.append(item)
+            total = int(data.get("total") or 0)
+            if len(batch) < 100 or (total and page * 100 >= total):
+                break
+        return sessions
+
     def _search_via_yjapi(self, filters: SearchFilters) -> dict[str, Any]:
         """通过 yjapi 域名搜索（包含 show_all/show_delete，覆盖面更广）。"""
         import sys as _sys
@@ -1067,6 +1117,7 @@ def _normalize_search_item(item: dict[str, Any]) -> dict[str, Any]:
         "status_label": real_status,
         "term_name": item.get("term_name", ""),
         "course_time": course_time,
+        "course_begin_ts": _to_int(raw_time),
         "time_slot": "",
         "time_range": "",
         "thumb": item.get("extract_thumb") or item.get("thumb", ""),

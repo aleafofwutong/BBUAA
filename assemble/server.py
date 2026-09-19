@@ -7,7 +7,9 @@ import json
 import threading
 import webbrowser
 from dataclasses import asdict
+from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
 from flask import Flask, jsonify, request, send_from_directory
 
@@ -19,6 +21,88 @@ WEB_DIR = Path(__file__).resolve().parent / "web"
 LIVE_CACHE_FILE = Path(__file__).resolve().parent / "live_cache.json"
 RECORD_DIR = Path(__file__).resolve().parent / "recordings"
 RECORD_META_FILE = Path(__file__).resolve().parent / "recordings.json"
+
+
+def _current_term_id(terms: list[dict[str, Any]], today: date | None = None) -> str:
+    """Pick the current term from API flags, then its name, then list order."""
+    if not terms:
+        return ""
+
+    truthy = {"1", "true", "yes", "current", "当前"}
+    for term in terms:
+        for key in ("is_current", "current", "current_term", "is_default"):
+            if str(term.get(key, "")).strip().lower() in truthy:
+                return str(term.get("id", ""))
+
+    current_day = today or date.today()
+    if current_day.month >= 8:
+        start_year, semester = current_day.year, 1
+    elif current_day.month == 1:
+        start_year, semester = current_day.year - 1, 1
+    else:
+        start_year, semester = current_day.year - 1, 2
+
+    year_tokens = {
+        f"{start_year}-{start_year + 1}",
+        f"{start_year}—{start_year + 1}",
+        f"{start_year}–{start_year + 1}",
+        f"{start_year}{start_year + 1}",
+    }
+    semester_tokens = (
+        ("第一学期", "第1学期", "秋季学期", "秋季", "fall")
+        if semester == 1
+        else ("第二学期", "第2学期", "春季学期", "春季", "spring")
+    )
+    for term in terms:
+        name = str(term.get("term_name") or term.get("name") or "")
+        compact_name = name.replace(" ", "").lower()
+        if any(token in compact_name for token in year_tokens) and any(
+            token in compact_name for token in semester_tokens
+        ):
+            return str(term.get("id", ""))
+
+    return str(terms[0].get("id", ""))
+
+
+def _same_favorite_course(course: dict[str, Any], favorite: dict[str, Any]) -> bool:
+    def clean(value: Any) -> str:
+        return str(value or "").strip().casefold()
+
+    course_id = clean(course.get("course_id"))
+    favorite_id = clean(favorite.get("course_id"))
+    if course_id and favorite_id and course_id == favorite_id:
+        return True
+
+    course_code = clean(course.get("course_code"))
+    favorite_code = clean(favorite.get("course_code"))
+    if course_code and favorite_code and course_code == favorite_code:
+        return True
+
+    title = clean(course.get("title"))
+    favorite_title = clean(favorite.get("title"))
+    if not title or title != favorite_title:
+        return False
+    lecturer = clean(course.get("lecturer_name"))
+    favorite_lecturer = clean(favorite.get("lecturer_name"))
+    return not favorite_lecturer or lecturer == favorite_lecturer
+
+
+def _course_in_term(course: dict[str, Any], term: dict[str, Any] | None) -> bool:
+    if not term or not term.get("begin_date") or not term.get("end_date"):
+        return True
+    try:
+        begin = date.fromisoformat(str(term["begin_date"])[:10])
+        end = date.fromisoformat(str(term["end_date"])[:10])
+        timestamp = int(course.get("course_begin_ts") or 0)
+        if timestamp:
+            if timestamp > 10_000_000_000:
+                timestamp //= 1000
+            course_day = datetime.fromtimestamp(timestamp).date()
+        else:
+            course_day = date.fromisoformat(str(course.get("course_time") or "")[:10])
+        return begin <= course_day <= end
+    except (TypeError, ValueError, OSError):
+        return True
 
 
 def create_app(cookie_path: Path | None = None) -> Flask:
@@ -149,7 +233,8 @@ def create_app(cookie_path: Path | None = None) -> Flask:
 
     @app.get("/api/meta/terms")
     def meta_terms():
-        return jsonify({"list": get_client().list_terms()})
+        terms = get_client().list_terms()
+        return jsonify({"list": terms, "current_term_id": _current_term_id(terms)})
 
     @app.get("/api/meta/colleges")
     def meta_colleges():
@@ -206,6 +291,92 @@ def create_app(cookie_path: Path | None = None) -> Flask:
             return jsonify({**result, "filters": asdict(filters)})
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)}), 500
+
+    @app.post("/api/courses/favorites/search")
+    def favorite_courses_search():
+        payload = request.get_json(silent=True) or {}
+        raw_favorites = payload.get("favorites")
+        if not isinstance(raw_favorites, list) or not raw_favorites:
+            return jsonify({"ok": False, "error": "请先收藏至少一门课程"}), 400
+        if len(raw_favorites) > 50:
+            return jsonify({"ok": False, "error": "一次最多查询 50 门收藏课程"}), 400
+
+        favorites = [item for item in raw_favorites if isinstance(item, dict)]
+        if not favorites:
+            return jsonify({"ok": False, "error": "收藏课程数据无效"}), 400
+        client = get_client()
+        terms = client.list_terms()
+        term_id = str(payload.get("term") or "").strip()
+        if not term_id:
+            term_id = _current_term_id(terms)
+        if not term_id:
+            return jsonify({"ok": False, "error": "无法确定当前学期"}), 400
+        selected_term = next(
+            (term for term in terms if str(term.get("id", "")) == term_id),
+            None,
+        )
+
+        merged: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        errors: list[str] = []
+        searched: set[tuple[str, str, str]] = set()
+        for favorite in favorites:
+            course_id = str(favorite.get("course_id") or "").strip()
+            course_code = str(favorite.get("course_code") or "").strip()
+            title = str(favorite.get("title") or "").strip()
+            lecturer = str(favorite.get("lecturer_name") or "").strip()
+            query_key = (
+                ("code", course_code.casefold(), "")
+                if course_code
+                else ("id", course_id.casefold(), "")
+                if course_id
+                else ("title", title.casefold(), lecturer.casefold())
+            )
+            if query_key in searched or not (course_id or course_code or title):
+                continue
+            searched.add(query_key)
+            try:
+                if course_id:
+                    candidates = client.list_course_sessions(course_id)
+                else:
+                    filters = SearchFilters(
+                        course_code=course_code,
+                        title="" if course_code else title,
+                        realname="" if course_code else lecturer,
+                        term=term_id,
+                        page=1,
+                        per_page=500,
+                    )
+                    candidates = client.search(filters).get("list", [])
+            except Exception as exc:
+                errors.append(f"{title or course_code}: {exc}")
+                continue
+            for course in candidates:
+                if not _same_favorite_course(course, favorite) or not _course_in_term(
+                    course, selected_term
+                ):
+                    continue
+                key = f"{course.get('course_id', '')}|{course.get('sub_id', '')}"
+                if key not in seen:
+                    seen.add(key)
+                    merged.append(course)
+
+        merged.sort(
+            key=lambda item: (
+                int(item.get("course_begin_ts") or 0),
+                str(item.get("course_time") or ""),
+            ),
+            reverse=True,
+        )
+        return jsonify({
+            "ok": True,
+            "total": len(merged),
+            "list": merged,
+            "term": term_id,
+            "favorite_count": len(searched),
+            "errors": errors,
+            "source": "favorites",
+        })
 
     @app.get("/api/courses/detail")
     def course_detail():

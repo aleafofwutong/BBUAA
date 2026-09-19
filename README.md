@@ -19,6 +19,7 @@ BBUAA 为你提供一个在寝室就能搜索、观看直播/回放、下载 PPT
 | 多维度筛选 | 课程名、教师、编号、学院、学期、日期、校区/教学楼/教室 |
 | 状态筛选 | **全部 / 🔴 直播中 / 📼 可回放 / ⏳ 回放生成中**，一键过滤 |
 | 默认当天 | 登录后自动显示当天课程，无需手动选日期 |
+| 课程收藏 | 星标收藏课程，一键查看本学期所有对应课次（不限状态，收藏仅保存在本地浏览器） |
 | SSO 登录 | 模拟北航统一认证，cookie 持久化，一次登录多次使用 |
 | 登出 | 右上角一键清除 cookie |
 
@@ -125,6 +126,7 @@ BBUAA/
 | `POST /api/auth/login` | SSO 登录 |
 | `GET /api/auth/logout` | 登出（删除 cookie 文件） |
 | `GET /api/courses/search` | 课程搜索（支持 `status_filter=live\|playback\|generating`） |
+| `POST /api/courses/favorites/search` | 聚合查询本学期收藏课程的全部课次 |
 | `GET /api/courses/detail` | 课程详情（返回 `sources.live` / `sources.replay` 分开的视频地址） |
 | `GET /api/courses/ppt` | PPT 时间轴（支持多 `resource_guid` 逐个尝试） |
 | `GET /api/courses/ppt/download` | PPT 导出 .pptx（`filter_similar=1` 默认过滤相似页） |

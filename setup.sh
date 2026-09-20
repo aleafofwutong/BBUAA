@@ -78,11 +78,14 @@ PACKAGES=(
     "requests>=2.31"
     "pillow>=9.0"
     "python-pptx>=0.6"
+    "opencv-python-headless>=4.8"
 )
 
 for pkg in "${PACKAGES[@]}"; do
     pkg_name="${pkg%%>=*}"
-    if "$PYTHON" -c "import ${pkg_name//-/_}" 2>/dev/null; then
+    mod_name="${pkg_name//-/_}"
+    if [[ "$pkg_name" == "opencv-python-headless" ]]; then mod_name="cv2"; fi
+    if "$PYTHON" -c "import $mod_name" 2>/dev/null; then
         info "$pkg_name 已安装"
     else
         info "安装 $pkg ..."
@@ -100,6 +103,7 @@ for mod, pkg in [
     ("requests", "requests"),
     ("PIL", "pillow"),
     ("pptx", "python-pptx"),
+    ("cv2", "opencv-python-headless"),
 ]:
     try:
         __import__(mod)

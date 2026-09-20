@@ -572,6 +572,7 @@ class ClassroomClient:
         if jwt:
             ppt_headers["Authorization"] = f"Bearer {jwt}"
         all_items: list[dict[str, Any]] = []
+        seen_pages: set[str] = set()
         for page in range(1, 10):
             params = {
                 "course_id": course_id,
@@ -588,6 +589,10 @@ class ClassroomClient:
             batch = data.get("list") or []
             if not batch:
                 break
+            page_signature = json.dumps(batch, sort_keys=True, ensure_ascii=True)
+            if page_signature in seen_pages:
+                break
+            seen_pages.add(page_signature)
             for item in batch:
                 time_sec = _to_int(item.get("created_sec", 0))
                 img_url = ""
@@ -605,6 +610,9 @@ class ClassroomClient:
                         }
                     )
             if len(batch) < 100:
+                break
+            total = int(data.get("total") or 0)
+            if total and len(all_items) >= total:
                 break
         all_items.sort(key=lambda x: x["time_sec"])
         return all_items

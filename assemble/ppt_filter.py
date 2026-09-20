@@ -10,15 +10,17 @@ from __future__ import annotations
 import argparse
 import io
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
-from PIL import Image, ImageChops, ImageOps, ImageStat
+from PIL import Image, ImageChops, ImageDraw, ImageOps, ImageStat
 
 DEFAULT_MAX_CHANGED_RATIO = 0.003
 DEFAULT_PIXEL_DELTA = 25
 DEFAULT_MAX_MEAN_DELTA = 2.0
 THUMBNAIL_SIZE = (640, 360)
 RESAMPLE_BILINEAR = getattr(Image, "Resampling", Image).BILINEAR
+QR_MAX_CHANGED_RATIO = 0.012
+QR_MAX_MEAN_DELTA = 3.0
 
 
 def _thumbnail(data: bytes) -> tuple[tuple[int, int], Image.Image]:
@@ -26,6 +28,26 @@ def _thumbnail(data: bytes) -> tuple[tuple[int, int], Image.Image]:
         image = ImageOps.exif_transpose(source)
         size = image.size
         return size, image.convert("RGB").resize(THUMBNAIL_SIZE, RESAMPLE_BILINEAR)
+
+
+def _qr_bounds(image: Image.Image) -> tuple[int, int, int, int] | None:
+    import cv2
+    import numpy as np
+
+    found, corners = cv2.QRCodeDetector().detect(np.asarray(ImageOps.grayscale(image)))
+    if not found or corners is None:
+        return None
+    x1, y1 = corners[0].min(axis=0)
+    x2, y2 = corners[0].max(axis=0)
+    width, height = x2 - x1, y2 - y1
+    # Exclude small QR codes (e.g. a link on an otherwise changing lecture slide).
+    if not (image.height * 0.25 <= height <= image.height * 0.8):
+        return None
+    if not (0.85 <= width / height <= 1.15):
+        return None
+    if width * height > image.width * image.height * 0.3:
+        return None
+    return round(x1), round(y1), round(x2), round(y2)
 
 
 def _similar(
@@ -44,7 +66,26 @@ def _similar(
     changed = strongest.point(lambda value: 255 if value > pixel_delta else 0)
     changed_ratio = ImageStat.Stat(changed).mean[0] / 255
     mean_delta = sum(ImageStat.Stat(difference).mean) / 3
-    return changed_ratio <= max_changed_ratio and mean_delta <= max_mean_delta
+    if changed_ratio <= max_changed_ratio and mean_delta <= max_mean_delta:
+        return True
+
+    first_qr = _qr_bounds(previous[1])
+    second_qr = _qr_bounds(current[1])
+    if first_qr is None or second_qr is None:
+        return False
+    if any(abs(a - b) > 12 for a, b in zip(first_qr, second_qr)):
+        return False
+
+    mask = Image.new("L", THUMBNAIL_SIZE, 255)
+    draw = ImageDraw.Draw(mask)
+    for x1, y1, x2, y2 in (first_qr, second_qr):
+        draw.rectangle((x1 - 14, y1 - 14, x2 + 14, y2 + 14), fill=0)
+    outside_changed = ImageStat.Stat(changed, mask).mean[0] / 255
+    outside_delta = sum(ImageStat.Stat(difference, mask).mean) / 3
+    return (
+        outside_changed <= min(QR_MAX_CHANGED_RATIO, max_changed_ratio * 4)
+        and outside_delta <= min(QR_MAX_MEAN_DELTA, max_mean_delta * 1.5)
+    )
 
 
 def filter_adjacent_images(
@@ -80,6 +121,34 @@ def filter_adjacent_images(
             removed.append(index)
             continue
         kept.append((index, data))
+        previous = current
+    return kept, removed
+
+
+def filter_timeline_images(
+    timeline: list[dict], fetch_image: Callable[[str], bytes],
+) -> tuple[list[dict], list[int]]:
+    """Filter a timeline without collapsing across images that could not be read."""
+    kept: list[dict] = []
+    removed: list[int] = []
+    previous: tuple[tuple[int, int], Image.Image] | None = None
+    for index, slide in enumerate(timeline):
+        try:
+            current = _thumbnail(fetch_image(slide["img_url"]))
+        except (KeyError, OSError, ValueError):
+            previous = None
+            kept.append(slide)
+            continue
+        if previous is not None and _similar(
+            previous,
+            current,
+            max_changed_ratio=DEFAULT_MAX_CHANGED_RATIO,
+            pixel_delta=DEFAULT_PIXEL_DELTA,
+            max_mean_delta=DEFAULT_MAX_MEAN_DELTA,
+        ):
+            removed.append(index + 1)
+            continue
+        kept.append(slide)
         previous = current
     return kept, removed
 

@@ -128,7 +128,7 @@ BBUAA/
 | `GET /api/courses/search` | 课程搜索（支持 `status_filter=live\|playback\|generating`） |
 | `POST /api/courses/favorites/search` | 聚合查询本学期收藏课程的全部课次 |
 | `GET /api/courses/detail` | 课程详情（返回 `sources.live` / `sources.replay` 分开的视频地址） |
-| `GET /api/courses/ppt` | PPT 时间轴（支持多 `resource_guid` 逐个尝试） |
+| `GET /api/courses/ppt` | PPT 时间轴（去除上游重复分页，默认过滤几乎相同的相邻截图及仅二维码变化的签到页；`filter_similar=0` 返回原始时间轴） |
 | `GET /api/courses/ppt/download` | PPT 导出 .pptx（`filter_similar=1` 默认过滤相似页） |
 | `GET /player/` | 播放器页面 |
 | `GET /api/proxy/video` | 视频流代理（注入 Cookie + Origin 伪装 + m3u8 分片 URL 改写） |
@@ -158,7 +158,7 @@ API 的 `status_label` 不可靠，改用 `sub_status` 数值映射：`1→直�
 | 层 | 技术 |
 |:---|:---|
 | 前端 | Vanilla JS + hls.js + CSS3 |
-| 后端 | Python Flask + requests + Pillow + python-pptx |
+| 后端 | Python Flask + requests + Pillow + python-pptx + OpenCV（二维码检测） |
 | 认证 | 北航 CAS SSO + JWT Bearer Token（从 `_token` cookie 提取） |
 | 视频 | HLS (m3u8) 代理 + MP4 Range 代理 |
 | 抓包 | mitmproxy |

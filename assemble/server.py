@@ -14,7 +14,7 @@ from typing import Any
 from flask import Flask, jsonify, request, send_from_directory
 
 from assemble.courses import ClassroomClient, SearchFilters
-from assemble.ppt_filter import filter_adjacent_images
+from assemble.ppt_filter import filter_adjacent_images, filter_timeline_images
 from assemble.sso_login import COOKIE_FILE, _proxy_from_env, is_logged_in, load_cookies, login as sso_login, save_cookies
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -463,6 +463,9 @@ def create_app(cookie_path: Path | None = None) -> Flask:
         resource_guid = request.args.get("resource_guid", "").strip()
         # 支持逗号分隔的多个 guid，逐个尝试
         alt_guids = [g.strip() for g in request.args.get("alt_guids", "").split(",") if g.strip()]
+        filter_similar = request.args.get("filter_similar", "1").strip().lower() not in {
+            "0", "false", "no", "off",
+        }
         if not course_id or not sub_id:
             return jsonify({"ok": False, "error": "需要 course_id, sub_id"}), 400
 
@@ -475,11 +478,63 @@ def create_app(cookie_path: Path | None = None) -> Flask:
             try:
                 timeline = client.get_ppt_timeline(course_id, sub_id, guid)
                 if timeline:
+                    original_total = len(timeline)
+                    removed_pages: list[int] = []
+                    if filter_similar:
+                        from concurrent.futures import ThreadPoolExecutor
+                        import requests as _requests
+                        from urllib.parse import urlparse
+
+                        cookie_header = "; ".join(
+                            f"{cookie.name}={cookie.value}" for cookie in client.session.cookies
+                        )
+                        headers = {
+                            "Referer": "https://classroom.msa.buaa.edu.cn/",
+                            "Origin": "https://classroom.msa.buaa.edu.cn",
+                            "User-Agent": client.session.headers.get("User-Agent", "Mozilla/5.0"),
+                            "Cookie": cookie_header,
+                        }
+
+                        def fetch_image(url: str) -> bytes:
+                            parsed = urlparse(url)
+                            if parsed.scheme != "https" or parsed.hostname not in {
+                                "resource.msa.buaa.edu.cn", "www.msa.buaa.edu.cn",
+                                "video.msa.buaa.edu.cn",
+                            }:
+                                raise ValueError("不支持的 PPT 图片地址")
+                            try:
+                                response = _requests.get(
+                                    url, headers=headers, proxies=client.proxies, timeout=20,
+                                )
+                                response.raise_for_status()
+                                return response.content
+                            except _requests.RequestException as exc:
+                                raise OSError(str(exc)) from exc
+
+                        def read_image(url: str) -> bytes | OSError:
+                            try:
+                                return fetch_image(url)
+                            except (OSError, ValueError) as exc:
+                                return OSError(str(exc))
+
+                        urls = list(dict.fromkeys(slide.get("img_url", "") for slide in timeline))
+                        with ThreadPoolExecutor(max_workers=8) as pool:
+                            images = dict(zip(urls, pool.map(read_image, urls)))
+
+                        def cached_image(url: str) -> bytes:
+                            image = images[url]
+                            if isinstance(image, OSError):
+                                raise image
+                            return image
+
+                        timeline, removed_pages = filter_timeline_images(timeline, cached_image)
                     return jsonify({
                         "ok": True,
                         "total": len(timeline),
                         "list": timeline,
                         "used_guid": guid,
+                        "original_total": original_total,
+                        "removed_pages": removed_pages,
                     })
             except Exception as exc:
                 last_error = str(exc)
